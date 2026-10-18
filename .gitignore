@@ -1,0 +1,15 @@
+# Сборка
+build/
+dist/
+*.spec
+__pycache__/
+
+# Данные пользователя (лежат рядом с программой)
+saves.json
+settings.json
+calculator.log*
+*.broken
+.tmp_*.json
+
+# Превью иконки
+tools/icon_preview.png

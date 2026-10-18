@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Тесты расчёта</title>
+  <style>
+    body { background: #0e0e0f; color: #f2f2f0; font: 14px/1.5 system-ui, "Segoe UI", Roboto, sans-serif; margin: 16px; }
+    .ok { color: #9a9a9c; } .fail { color: #e5383b; font-weight: 600; }
+    h1 { font-size: 18px; }
+  </style>
+</head>
+<body>
+  <h1 id="summary">Тесты…</h1>
+  <ul id="list"></ul>
+  <script src="data.js"></script>
+  <script src="ballistics.js"></script>
+  <script src="tests/ballistics.test.js"></script>
+  <script>
+    const { total, failed, results } = window.TEST_RESULTS;
+    document.getElementById("summary").textContent = `${total - failed}/${total} тестов прошло`;
+    const list = document.getElementById("list");
+    for (const r of results) {
+      const li = document.createElement("li");
+      li.className = r.ok ? "ok" : "fail";
+      li.textContent = r.ok ? r.name : `${r.name} — ${r.error}`;
+      list.appendChild(li);
+    }
+  </script>
+</body>
+</html>

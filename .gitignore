@@ -11,5 +11,8 @@ calculator.log*
 *.broken
 .tmp_*.json
 
+# Локальные настройки редактора
+.claude/
+
 # Превью иконки
 tools/icon_preview.png

@@ -4,8 +4,16 @@
 
 ## Скачать
 
-Готовый exe для Windows — в разделе [Releases](https://github.com/Skiboi-alt/artillery-calculator-104/releases/latest).
+**Windows:** готовый exe — в разделе [Releases](https://github.com/Skiboi-alt/artillery-calculator-104/releases/latest).
 Python не нужен: скачайте и запустите. Сохранения появятся рядом с exe.
+
+**Телефон (Android и iPhone):** откройте https://skiboi-alt.github.io/artillery-calculator-104/ и установите
+на главный экран:
+- Android (Chrome): кнопка «Установить» в приложении или меню ⋮ → «Добавить на главный экран»;
+- iPhone (Safari): «Поделиться» → «На экран «Домой»».
+
+После первого открытия приложение работает без интернета. Сохранения можно перенести с ПК:
+«Сохранения» → «Импорт saves.json» (и обратно — «Экспорт»).
 
 ## Запуск из исходников
 
@@ -56,7 +64,10 @@ python Calculator.py
 | `storage.py` | Сохранения, настройки, журнал |
 | `ui_widgets.py` | Тема «Волчьей стаи» и компоненты интерфейса |
 | `tests/` | Тесты расчёта и файлов |
-| `tools/make_icon.py` | Генерация `icon.ico` из эмблемы (нужен Pillow) |
+| `mobile/` | Мобильная версия (PWA): `index.html`, `app.js`, `ballistics.js`, `styles.css` |
+| `mobile/data.js` | Таблицы и палитра для телефона — генерируются из `weapons_data.py` |
+| `tools/make_icon.py` | Генерация `icon.ico` и иконок телефона из эмблемы (нужен Pillow) |
+| `tools/export_mobile.py` | Выгрузка таблиц в `mobile/data.js` |
 | `_archive/` | Старые скрипты сборки, инструкции и прежняя иконка |
 
 ## Тесты
@@ -64,6 +75,19 @@ python Calculator.py
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+Тесты мобильной версии — откройте `mobile/tests.html` в браузере или выполните `node mobile/tests/ballistics.test.js`.
+На GitHub они запускаются автоматически перед каждой публикацией мобильной версии.
+
+## Мобильная версия: разработка
+
+```bash
+python -m http.server 8104 --directory mobile
+```
+
+Затем откройте http://localhost:8104 (офлайн-кэш на localhost выключен; включить — `?sw=1`).
+После изменения таблиц выполните `python tools/export_mobile.py`. После изменения файлов в `mobile/`
+увеличьте `VERSION` в `mobile/sw.js` — так установленные приложения получат обновление.
 
 ## Сборка exe
 

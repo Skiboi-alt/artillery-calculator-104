@@ -725,9 +725,8 @@ class HistoryList(tk.Canvas):
 
     def _on_motion(self, event):
         if self._clear_box and self._in_box(self._clear_box, event):
-            self.config(cursor="hand2")
             self._set_hover(None)
-            self.config(cursor="hand2")
+            self.config(cursor="hand2")  # После _set_hover, который сбрасывает курсор
             return
         self._set_hover(self._hit(event.y))
 

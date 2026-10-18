@@ -5,7 +5,10 @@
     • табличный режим — точное совпадение дальности со строкой таблицы;
     • интерполяция — линейная между соседними строками (возвышение, delev, время);
     • поправка на превышение — delev MIL на каждые 100 м разницы высот:
-      цель выше орудия → возвышение уменьшается, ниже → увеличивается.
+      цель выше орудия → возвышение уменьшается, ниже → увеличивается;
+    • поправка времени полёта — time_per_100 с на каждые 100 м разницы высот (4-й столбец таблицы):
+      цель выше → снаряд встречает её раньше на нисходящей ветви, время меньше; ниже — больше.
+      Знак в методичке не указан — принят по физике навесной стрельбы.
 """
 
 import math
@@ -21,10 +24,12 @@ class Solution:
     """Результат расчёта"""
     elevation: float                 # Итоговое возвышение, MIL
     base_elevation: float            # Возвышение без поправки на превышение, MIL
-    flight_time: float               # Время полёта, с
+    flight_time: float               # Время полёта (с поправкой на превышение, если она включена), с
     correction: Optional[float]      # Поправка, MIL (None — поправка выключена)
     lower_row: dict                  # Строка таблицы снизу (в табличном режиме = upper_row)
     upper_row: dict                  # Строка таблицы сверху
+    base_flight_time: Optional[float] = None   # Время полёта по таблице, без поправки
+    time_correction: Optional[float] = None    # Поправка времени, с (None — поправка выключена)
 
 
 class OutOfTableError(ValueError):
@@ -131,12 +136,31 @@ def solve(weapon_data, index, weapon, charge, distance, mode, gun_height=0.0, ta
             raise OutOfTableError("Вне диапазона", f"{distance:g} м недоступно для заряда {charge}.{hint}")
         elevation, delev, flight_time, lower, upper = result
 
-    if apply_correction:
-        final, _ = height_correction(elevation, delev, gun_height, target_height)
-        correction = final - elevation
-    else:
-        final, correction = elevation, None
-    return Solution(final, elevation, flight_time, correction, lower, upper)
+    if not apply_correction:
+        return Solution(elevation, elevation, flight_time, None, lower, upper, flight_time, None)
+
+    final, _ = height_correction(elevation, delev, gun_height, target_height)
+    time_per_100 = _lerp_rows(lower, upper, distance, "time_per_100")
+    corrected_time, _ = flight_time_correction(flight_time, time_per_100, gun_height, target_height)
+    return Solution(final, elevation, corrected_time, final - elevation, lower, upper,
+                    flight_time, corrected_time - flight_time)
+
+
+def _lerp_rows(lower, upper, distance, key):
+    """Значение столбца key между двумя строками таблицы (для одной строки — само значение)"""
+    span = upper["range"] - lower["range"]
+    ratio = (distance - lower["range"]) / span if span else 0.0
+    return lower[key] + (upper[key] - lower[key]) * ratio
+
+
+def flight_time_correction(flight_time, time_per_100, gun_height, target_height):
+    """(итоговое время, величина поправки ≥ 0): time_per_100 с на каждые 100 м разницы высот"""
+    if time_per_100 is None:
+        return flight_time, 0.0
+    adjustment = abs(gun_height - target_height) * (time_per_100 / 100)
+    if target_height > gun_height:
+        return flight_time - adjustment, adjustment
+    return flight_time + adjustment, adjustment
 
 
 def adjust_fire(base_distance, along, lateral):

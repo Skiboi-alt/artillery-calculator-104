@@ -159,6 +159,15 @@ button { cursor: pointer; }
 .adjust-direction { flex: 1; min-width: 0; font-size: 12px; color: var(--text_faint); }
 .adjust-direction.on { color: var(--text); font-weight: 600; }
 
+/* Подсказки по методичке */
+.advice { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 3px; }
+.advice:empty { display: none; }
+.advice li { display: flex; gap: 8px; font-size: 12px; color: var(--text_muted); line-height: 1.35; }
+.advice li::before { content: "·"; flex: none; width: 10px; color: var(--text_faint); font-weight: 700; }
+.advice li.warn { color: var(--text); }
+.advice li.warn::before { content: "!"; color: var(--accent); }
+body:has(input:focus) .advice { display: none; }
+
 /* Справка */
 .help-section { margin-top: 14px; }
 .help-section .caption { margin-bottom: 3px; }
@@ -346,7 +355,6 @@ body:has(input:focus) #resValue { font-size: 36px; }
 .save-list li.selected { background: var(--surface_3); border-color: var(--accent); }
 .save-list b { display: block; font-weight: 600; }
 .save-list small { color: var(--text_muted); font-size: 12px; }
-.empty-note { color: var(--text_faint); font-size: 14px; padding: 8px 0; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before { transition-duration: 0s !important; animation-duration: 0s !important; }

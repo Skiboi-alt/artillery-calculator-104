@@ -6,8 +6,10 @@
   if (isNode) {
     require("../data.js");
     require("../ballistics.js");
+    require("../field_rules.js");
   }
   const B = root.Ballistics;
+  const F = root.FieldRules;
   const D = root.WEAPON_DATA;
   const MORTAR = "Миномёт", SLEDGE = "Кувалда";
   const solve = (w, c, d, m, gun = 0, target = 0, corr = false) => B.solve(D, w, c, d, m, gun, target, corr);
@@ -150,6 +152,39 @@
     eq(B.compareCharges(D, MORTAR, 525, "table"), []);
     eq(B.compareCharges(D, MORTAR, 525, "nontable").length, 2);
   });
+
+  // Поправка времени полёта на превышение
+  test("цель выше — прилёт раньше", () => {
+    const s = solve(MORTAR, 1, 500, "table", 0, 200, true);
+    near(s.flightTime, 28.3 - 1.4);
+    near(s.timeCorrection, -1.4);
+    eq(s.baseFlightTime, 28.3);
+  });
+  test("цель ниже — прилёт позже", () => near(solve(MORTAR, 1, 500, "table", 150, 50, true).flightTime, 28.3 + 0.7));
+  test("интерполяция time_per_100", () => near(solve(SLEDGE, 2, 14650, "nontable", 0, 100, true).timeCorrection, -0.6));
+  test("без поправки — время по таблице", () => {
+    const s = solve(MORTAR, 1, 500, "table", 0, 200, false);
+    eq([s.flightTime, s.baseFlightTime, s.timeCorrection], [28.3, 28.3, null]);
+  });
+
+  // Правила методички (те же случаи, что в tests/test_field_rules.py)
+  const texts = (items) => items.map(([, t]) => t);
+  test("ровная местность — только разброс", () => {
+    const items = F.advisories(MORTAR, 1, 1000, 100, 120, false);
+    eq(items.length, 1);
+    eq(items[0][0], "info");
+  });
+  test("перепад: рекомендуется и обязательна", () => {
+    eq(F.advisories(MORTAR, 1, 1000, 100, 160, false)[0], ["info", "Перепад высот 60 м — поправка на превышение рекомендуется"]);
+    eq(F.advisories(MORTAR, 1, 1000, 100, 0, false)[0], ["warn", "Перепад высот 100 м — поправка на превышение обязательна"]);
+  });
+  test("без высот подсказки о перепаде нет", () => eq(F.advisories(MORTAR, 1, 1000, null, null, false).length, 1));
+  test("высокая цель — заряд 2", () => {
+    eq(texts(F.advisories(MORTAR, 1, 1000, 0, 300, true)).filter((t) => t.includes("заряд 2")).length, 1);
+    eq(texts(F.advisories(MORTAR, 2, 1000, 0, 300, true)).filter((t) => t.includes("заряд 2")).length, 0);
+    eq(texts(F.advisories(SLEDGE, 0, 1000, 0, 500, true)).filter((t) => t.includes("заряд 2")).length, 0);
+  });
+  test("Молот вместо Миномёта", () => eq([F.displayName(MORTAR), F.displayName(SLEDGE)], ["Молот", "Кувалда"]));
 
   const failed = results.filter((r) => !r.ok);
   root.TEST_RESULTS = { total: results.length, failed: failed.length, results };

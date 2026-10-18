@@ -68,11 +68,13 @@
           <div class="stat">
             <div class="caption">Поправка</div>
             <div class="stat-value" id="resCorr">—</div>
+            <div class="stat-note" id="corrNote"></div>
           </div>
         </div>
       </div>
       <p class="res-message" id="resMessage">Заполните параметры и нажмите «Рассчитать»</p>
       <p class="res-detail" id="resDetail"></p>
+      <ul class="advice" id="adviceList"></ul>
       <div class="compare" id="compareRow"></div>
     </section>
 
@@ -178,6 +180,7 @@
   <input type="file" id="importFile" accept=".json,application/json" hidden>
 
   <script src="ballistics.js"></script>
+  <script src="field_rules.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

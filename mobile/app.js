@@ -4,6 +4,7 @@
   "use strict";
 
   const B = window.Ballistics;
+  const F = window.FieldRules;
   const DATA = window.WEAPON_DATA;
   const COLORS = window.THEME_COLORS;
   const MAX_SAVES = 10;
@@ -144,7 +145,7 @@
   const chargeSeg = createSegmented($("chargeSeg"), () => state.charge, (v) => { state.charge = String(v); chargeSeg.update(); updateChargeHint(); persistSettings(); });
   const modeSeg = createSegmented($("modeSeg"), () => state.mode, (v) => { state.mode = v; modeSeg.update(); persistSettings(); });
 
-  weaponSeg.setOptions(Object.keys(DATA).map((name) => [name, name]));
+  weaponSeg.setOptions(Object.keys(DATA).map((name) => [name, F.displayName(name)]));
   modeSeg.setOptions([["table", "По таблице"], ["nontable", "Интерполяция"]]);
 
   function onWeaponChange() {
@@ -261,7 +262,20 @@
     $("resTime").className = $("resCorr").className = "stat-value";
     $("resDetail").textContent = "";
     $("timerNote").textContent = "";
+    $("corrNote").textContent = "";
     renderComparison([], null);
+    renderAdvice([]);
+  }
+
+  function renderAdvice(items) {
+    const list = $("adviceList");
+    list.innerHTML = "";
+    for (const [level, text] of items) {
+      const li = document.createElement("li");
+      li.className = level;
+      li.textContent = text;
+      list.appendChild(li);
+    }
   }
 
   function showEmpty() {
@@ -290,7 +304,7 @@
     state.infoText = details;
   }
 
-  function showResult(solution, charge, distance, animate, comparison = []) {
+  function showResult(solution, charge, distance, animate, comparison = [], advice = []) {
     stopTimer();
     state.lastSolution = solution;
     setPill(state.mode === "table" ? "Таблица" : "Интерполяция", "ok");
@@ -306,9 +320,10 @@
     state.shownElevation = target;
 
     const direction = adjustDirectionText();
-    $("resMessage").textContent = `${state.weapon} · заряд ${charge} · ${B.g(distance)} м${direction ? ` · направление ${direction}` : ""}`;
+    $("resMessage").textContent = `${F.displayName(state.weapon)} · заряд ${charge} · ${B.g(distance)} м${direction ? ` · направление ${direction}` : ""}`;
     $("resMessage").className = "res-message";
     renderComparison(comparison, charge);
+    renderAdvice(advice);
     const { lowerRow: lo, upperRow: up } = solution;
     $("resDetail").textContent = lo === up
       ? `Строка таблицы: ${lo.range} м → ${lo.elev} MIL`
@@ -320,12 +335,16 @@
     if (solution.correction === null) {
       $("resCorr").textContent = "выкл";
       $("resCorr").className = "stat-value";
+      $("corrNote").textContent = "";
       state.resultText = `🎯 ${target.toFixed(1)} MIL | ⏱️  ${solution.flightTime.toFixed(1)} сек`;
       state.infoText = `Заряд: ${charge} | Расстояние: ${Math.round(distance)}м`;
     } else {
       const sign = solution.correction >= 0 ? "+" : "";
       $("resCorr").textContent = `${sign}${solution.correction.toFixed(1)} MIL`;
       $("resCorr").className = "stat-value on";
+      // Поправка времени полёта на превышение (4-й столбец таблицы)
+      const tc = solution.timeCorrection;
+      $("corrNote").textContent = `время ${tc >= 0 ? "+" : "−"}${Math.abs(tc).toFixed(1)} с`;
       state.resultText = `✈️  ${target.toFixed(1)} MIL | ⏱️  ${solution.flightTime.toFixed(1)} сек`;
       state.infoText = `Базовое: ${solution.baseElevation.toFixed(1)} MIL | Поправка на высоту: ${sign}${solution.correction.toFixed(1)} MIL`;
     }
@@ -398,7 +417,11 @@
 
     const comparison = B.compareCharges(DATA, state.weapon, input.distance, state.mode,
                                         input.gun, input.target, state.correction);
-    showResult(solution, input.charge, input.distance, !silent, comparison);
+    // Подсказки знают высоты, только если оба поля заполнены
+    const heightsEntered = fields.user_height.value.trim() !== "" && fields.target_height.value.trim() !== "";
+    const advice = F.advisories(state.weapon, input.charge, input.distance,
+                                heightsEntered ? input.gun : null, heightsEntered ? input.target : null, state.correction);
+    showResult(solution, input.charge, input.distance, !silent, comparison, advice);
     addHistory(solution, input.charge, input.distance);
     persistSettings();
     if (!silent) {
@@ -422,8 +445,7 @@
   }
 
   function addHistory(solution, charge, distance) {
-    const short = state.weapon === "Миномёт" ? "Мин." : state.weapon;
-    let summary = `${short} · з${charge} · ${B.g(distance)} м`;
+    let summary = `${F.displayName(state.weapon)} · з${charge} · ${B.g(distance)} м`;
     if (solution.correction !== null) {
       // Разница высот — чтобы отличать расчёты одной дистанции с поправкой и без
       const diff = (parseNumber(fields.target_height.value) || 0) - (parseNumber(fields.user_height.value) || 0);
@@ -587,7 +609,7 @@
   }
 
   function describeSave(data) {
-    const parts = [String(data.weapon || "Миномёт")];
+    const parts = [F.displayName(String(data.weapon || "Миномёт"))];
     if (String(data.charge ?? "").trim()) parts.push(`заряд ${data.charge}`);
     if (String(data.distance ?? "").trim()) parts.push(`${data.distance} м`);
     return parts.join(" · ");
@@ -866,7 +888,8 @@
   const HELP = [
     ["Порядок расчёта", "Выберите орудие и заряд, введите дистанцию и нажмите «Рассчитать». Заряды, которые не достают до цели, приглушены. Методичка советует брать меньший заряд — снаряд летит быстрее; в строке зарядов самый быстрый помечен."],
     ["Режимы", "«По таблице» — только дальности из таблицы (шаг 50 или 100 м). «Интерполяция» — любая дальность внутри диапазона заряда: значение берётся между двумя соседними строками."],
-    ["Поправка на превышение", "Учитывает разницу высот орудия и цели (высоты — с карты, над уровнем моря). Цель выше — возвышение уменьшается, ниже — увеличивается. Методичка: желательно от 50 м разницы, обязательно от 100 м."],
+    ["Поправка на превышение", "Учитывает разницу высот орудия и цели (высоты — с карты, над уровнем моря). Цель выше — возвышение уменьшается, ниже — увеличивается. Время полёта тоже поправляется по 4-му столбцу таблицы: цель выше — прилёт раньше, ниже — позже. Методичка: поправка желательна от 50 м разницы, обязательна от 100 м — программа подскажет, если она выключена."],
+    ["Подсказки под результатом", "Напоминания из методички: перепад высот без поправки; цель выше на 300 м и больше — для Молота нужен заряд 2; разброс до 20 м — проверьте, что союзников нет рядом с целью."],
     ["Корректировка огня", "После выстрела по докладу наблюдателя: «Недолёт» — дальше на шаг, «Перелёт» — ближе, «Левее»/«Правее» — сместить разрыв вбок. Сдвиги — относительно линии орудие–цель; дистанция пересчитывается, поправку направления (в милах, 6400 в круге) внесите в азимут. «Сброс» возвращает исходную дистанцию."],
     ["Таймер полёта", "Нажмите на «Время полёта» — обратный отсчёт до разрыва. Короткий сигнал за 5 секунд, длинный — в момент разрыва (и вибрация на Android). Повторное нажатие — стоп."],
     ["Сохранения", "Значок папки — список сохранений, импорт и экспорт saves.json: формат общий с программой для ПК."],

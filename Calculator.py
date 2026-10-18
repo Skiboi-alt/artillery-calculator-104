@@ -2,7 +2,8 @@
 
 Модули проекта:
     weapons_data.py — баллистические таблицы (значения не менять)
-    ballistics.py   — расчёт возвышения (покрыт тестами в tests/)
+    ballistics.py   — расчёт возвышения и времени полёта (покрыт тестами в tests/)
+    field_rules.py  — правила из методички: подсказки к результату, названия орудий
     storage.py      — сохранения, настройки, журнал ошибок
     ui_widgets.py   — тема и компоненты интерфейса
     version.py      — номер версии и «Что нового»
@@ -26,6 +27,7 @@ except ImportError:  # Не Windows — вместо писка будет си�
     winsound = None
 
 import ballistics
+import field_rules
 import updater
 from storage import Store, get_resource_path, log, setup_logging
 from version import APP_VERSION, MOBILE_URL, REPOSITORY, WHATS_NEW
@@ -244,7 +246,7 @@ class ArtilleryCalculator:
 
         self.saves_button = RoundedButton(
             header, self.theme, "", self.load_saved_values, COLORS["bg"],
-            variant="secondary", height=38, width=170,
+            variant="secondary", height=38, width=150,
         )
         self.saves_button.pack(side=tk.RIGHT)
         self._update_saves_button()
@@ -284,7 +286,7 @@ class ArtilleryCalculator:
         self._caption(inner, "Орудие").pack(fill=tk.X, pady=(0, px(6)))
         self.weapon_control = SegmentedControl(
             inner, self.theme, self.current_weapon,
-            [(name, name) for name in self.weapon_data], surface,
+            [(name, field_rules.display_name(name)) for name in self.weapon_data], surface,
             command=self._on_weapon_change,
         )
         self.weapon_control.pack(fill=tk.X, pady=(0, px(16)))
@@ -420,6 +422,10 @@ class ArtilleryCalculator:
                                    bg=surface, anchor="w", justify=tk.LEFT)
         self.res_detail.pack(fill=tk.X, pady=(px(2), 0))
 
+        # Подсказки по методичке: поправка на превышение, высокая цель, разброс
+        self.advice_frame = tk.Frame(inner, bg=surface)
+        self.advice_frame.pack(fill=tk.X)
+
         # Сравнение зарядов: по всем, которые дают решение (появляется, если их больше одного)
         self.compare_frame = tk.Frame(inner, bg=surface)
         self.compare_frame.pack(fill=tk.X)
@@ -492,6 +498,7 @@ class ArtilleryCalculator:
             tile.note.config(text="")
         self.res_detail.config(text="")
         self._render_comparison([], None)
+        self._render_advice([])
 
     def _show_empty_result(self):
         self.value_tween.stop()
@@ -516,7 +523,7 @@ class ArtilleryCalculator:
         self.result_text = f"❌ {title}"
         self.info_text = details
 
-    def _show_result(self, solution, charge, distance, animate=True, comparison=()):
+    def _show_result(self, solution, charge, distance, animate=True, comparison=(), advice=()):
         self._stop_timer()
         self.last_solution = solution
         mode = "Таблица" if self.calculation_mode.get() == "table" else "Интерполяция"
@@ -534,12 +541,13 @@ class ArtilleryCalculator:
         self.shown_elevation = target
 
         self.res_unit.config(fg=COLORS["text_muted"])
-        message = f"{self.get_current_weapon_name()}  ·  заряд {charge}  ·  {distance:g} м"
+        message = f"{field_rules.display_name(self.get_current_weapon_name())}  ·  заряд {charge}  ·  {distance:g} м"
         direction = self._adjust_direction_text()
         if direction:
             message += f"  ·  направление {direction}"
         self.res_message.config(text=message, fg=COLORS["text_muted"])
         self._render_comparison(comparison, charge)
+        self._render_advice(advice)
         lower, upper = solution.lower_row, solution.upper_row
         if lower is upper:
             self.res_detail.config(text=f"Строка таблицы: {lower['range']} м → {lower['elev']} MIL")
@@ -557,7 +565,9 @@ class ArtilleryCalculator:
             self.info_text = f"Заряд: {charge} | Расстояние: {distance:.0f}м"
         else:
             self.stat_correction.value.config(text=f"{solution.correction:+.1f} MIL", fg=COLORS["text"])
-            self.stat_correction.note.config(text=f"база {solution.base_elevation:.1f} MIL")
+            # Поправка времени полёта на превышение (4-й столбец таблицы)
+            self.stat_correction.note.config(
+                text=f"база {solution.base_elevation:.1f} · время {solution.time_correction:+.1f} с")
             self.result_text = f"✈️  {target:.1f} MIL | ⏱️  {solution.flight_time:.1f} сек"
             self.info_text = (f"Базовое: {solution.base_elevation:.1f} MIL | "
                               f"Поправка на высоту: {solution.correction:+.1f} MIL")
@@ -640,8 +650,7 @@ class ArtilleryCalculator:
         }
 
     def _add_history(self, solution, charge, distance):
-        weapon_short = "Мин." if self.get_current_weapon_name() == "Миномёт" else self.get_current_weapon_name()
-        summary = f"{weapon_short} · з{charge} · {distance:g} м"
+        summary = f"{field_rules.display_name(self.get_current_weapon_name())} · з{charge} · {distance:g} м"
         if solution.correction is not None:
             # Разница высот — чтобы отличать расчёты одной дистанции с поправкой и без
             heights = self._snapshot()
@@ -858,7 +867,7 @@ class ArtilleryCalculator:
             self.show_notification(f"Сохранено «{name}»", notification_type="success")
 
     def _describe_save(self, data):
-        parts = [str(data.get("weapon", "Миномёт"))]
+        parts = [field_rules.display_name(str(data.get("weapon", "Миномёт")))]
         if str(data.get("charge", "")).strip():
             parts.append(f"заряд {data.get('charge')}")
         if str(data.get("distance", "")).strip():
@@ -1085,7 +1094,14 @@ class ArtilleryCalculator:
             self.weapon_data, self.weapon_index, self.get_current_weapon_name(), distance,
             self.calculation_mode.get(), user_height, target_height, self.apply_height_correction.get(),
         )
-        self._show_result(solution, charge, distance, animate=not silent, comparison=comparison)
+        # Подсказки знают высоты, только если оба поля заполнены
+        heights_entered = all(self.entries[n].get().strip() for n in ("user_height", "target_height"))
+        advice = field_rules.advisories(
+            self.get_current_weapon_name(), charge, distance,
+            user_height if heights_entered else None, target_height if heights_entered else None,
+            self.apply_height_correction.get(),
+        )
+        self._show_result(solution, charge, distance, animate=not silent, comparison=comparison, advice=advice)
         self._add_history(solution, charge, distance)
 
     # ------------------------------------------------------------------
@@ -1120,6 +1136,22 @@ class ArtilleryCalculator:
             chip.create_text(w / 2, h / 2, text=text, font=self.theme.small,
                              fill=COLORS["text"] if active else COLORS["text_muted"])
             chip.bind("<Button-1>", lambda e, c=charge: self._select_charge(c))
+
+    def _render_advice(self, advice):
+        """Подсказки по методичке под результатом: warn — акцентом, info — приглушённо"""
+        for child in self.advice_frame.winfo_children():
+            child.destroy()
+        px = self.theme.px
+        for i, (level, text) in enumerate(advice):
+            row = tk.Frame(self.advice_frame, bg=COLORS["surface"])
+            row.pack(fill=tk.X, pady=(px(8) if i == 0 else px(2), 0))
+            color = COLORS["accent"] if level == "warn" else COLORS["text_faint"]
+            tk.Label(row, text="!" if level == "warn" else "·", font=self.theme.body_strong, fg=color,
+                     bg=COLORS["surface"], width=2, anchor="w").pack(side=tk.LEFT, anchor="n")
+            label = tk.Label(row, text=text, font=self.theme.small, fg=COLORS["text"] if level == "warn"
+                             else COLORS["text_muted"], bg=COLORS["surface"], anchor="w", justify=tk.LEFT)
+            label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            label.bind("<Configure>", lambda e, l=label: l.config(wraplength=e.width))
 
     def _select_charge(self, charge):
         self.charge_var.set(str(charge))
@@ -1281,8 +1313,12 @@ class ArtilleryCalculator:
          "дальность внутри диапазона заряда: значение берётся между двумя соседними строками таблицы."),
         ("Поправка на превышение",
          "Учитывает разницу высот орудия и цели (высоты — с карты, над уровнем моря). Цель выше — "
-         "возвышение уменьшается, ниже — увеличивается. Методичка: желательно от 50 м разницы, "
-         "обязательно от 100 м."),
+         "возвышение уменьшается, ниже — увеличивается. Время полёта тоже поправляется по 4-му столбцу "
+         "таблицы: цель выше — прилёт раньше, ниже — позже. Методичка: поправка желательна от 50 м "
+         "разницы, обязательна от 100 м — программа подскажет, если она выключена."),
+        ("Подсказки под результатом",
+         "Напоминания из методички: перепад высот без поправки; цель выше на 300 м и больше — для Молота "
+         "нужен заряд 2; разброс до 20 м — проверьте, что союзников нет рядом с целью."),
         ("Корректировка огня",
          "После выстрела по докладу наблюдателя: «Недолёт» — дальше на шаг, «Перелёт» — ближе, "
          "«Левее» / «Правее» — сместить разрыв вбок. Сдвиги считаются относительно линии орудие–цель; "
@@ -1305,10 +1341,17 @@ class ArtilleryCalculator:
                  bg=COLORS["surface"]).pack(anchor="w")
         tk.Label(body, text=f"Артиллерийский калькулятор 104-го ДОБ · версия {APP_VERSION}", font=self.theme.small,
                  fg=COLORS["text_muted"], bg=COLORS["surface"]).pack(anchor="w", pady=(0, px(10)))
-        for title, text in self.HELP_SECTIONS:
-            self._caption(body, title).pack(fill=tk.X, pady=(px(10), px(3)))
-            tk.Label(body, text=text, font=self.theme.body, fg=COLORS["text"], bg=COLORS["surface"],
-                     wraplength=px(540), justify=tk.LEFT, anchor="w").pack(fill=tk.X)
+        # Две колонки — чтобы окно помещалось по высоте даже на ноутбуке
+        grid = tk.Frame(body, bg=COLORS["surface"])
+        grid.pack(fill=tk.X)
+        half = (len(self.HELP_SECTIONS) + 1) // 2
+        for column, sections in enumerate((self.HELP_SECTIONS[:half], self.HELP_SECTIONS[half:])):
+            col = tk.Frame(grid, bg=COLORS["surface"])
+            col.grid(row=0, column=column, sticky="n", padx=(0, px(24)) if column == 0 else 0)
+            for title, text in sections:
+                self._caption(col, title).pack(fill=tk.X, pady=(px(10), px(3)))
+                tk.Label(col, text=text, font=self.theme.body, fg=COLORS["text"], bg=COLORS["surface"],
+                         wraplength=px(400), justify=tk.LEFT, anchor="w").pack(fill=tk.X)
         links = tk.Frame(body, bg=COLORS["surface"])
         links.pack(fill=tk.X, pady=(px(14), 0))
         for text, url in (("Проект на GitHub", f"https://github.com/{REPOSITORY}"),

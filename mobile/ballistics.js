@@ -105,12 +105,31 @@
       [elevation, delev, flightTime, lower, upper] = result;
     }
 
-    let final = elevation, correction = null;
-    if (applyCorrection) {
-      final = heightCorrection(elevation, delev, gunHeight, targetHeight)[0];
-      correction = final - elevation;
+    if (!applyCorrection) {
+      return { elevation, baseElevation: elevation, flightTime, correction: null, lowerRow: lower, upperRow: upper,
+               baseFlightTime: flightTime, timeCorrection: null };
     }
-    return { elevation: final, baseElevation: elevation, flightTime, correction, lowerRow: lower, upperRow: upper };
+    const final = heightCorrection(elevation, delev, gunHeight, targetHeight)[0];
+    const timePer100 = lerpRows(lower, upper, distance, "time_per_100");
+    const correctedTime = flightTimeCorrection(flightTime, timePer100, gunHeight, targetHeight)[0];
+    return { elevation: final, baseElevation: elevation, flightTime: correctedTime, correction: final - elevation,
+             lowerRow: lower, upperRow: upper, baseFlightTime: flightTime, timeCorrection: correctedTime - flightTime };
+  }
+
+  // Значение столбца между двумя строками таблицы (для одной строки — само значение)
+  function lerpRows(lower, upper, distance, key) {
+    const span = upper.range - lower.range;
+    const ratio = span ? (distance - lower.range) / span : 0;
+    return lower[key] + (upper[key] - lower[key]) * ratio;
+  }
+
+  // Поправка времени полёта (4-й столбец): цель выше — прилёт раньше, ниже — позже.
+  // Знак в методичке не указан — принят по физике навесной стрельбы, как в программе для ПК.
+  function flightTimeCorrection(flightTime, timePer100, gunHeight, targetHeight) {
+    if (timePer100 === null || timePer100 === undefined) return [flightTime, 0];
+    const adjustment = Math.abs(gunHeight - targetHeight) * (timePer100 / 100);
+    if (targetHeight > gunHeight) return [flightTime - adjustment, adjustment];
+    return [flightTime + adjustment, adjustment];
   }
 
   const MILS_PER_CIRCLE = 6400; // Угломер НАТО, как в Arma 3
@@ -158,7 +177,7 @@
   const api = {
     OutOfTableError, g, chargeRows, allowedCharges, chargeRange, chargesForDistance,
     closestRows, tableLookup, interpolate, heightCorrection, solve, validateWeaponData,
-    MILS_PER_CIRCLE, adjustFire, compareCharges,
+    MILS_PER_CIRCLE, adjustFire, compareCharges, flightTimeCorrection,
   };
   root.Ballistics = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

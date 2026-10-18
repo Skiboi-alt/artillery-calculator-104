@@ -104,6 +104,32 @@ class HeightCorrectionTest(unittest.TestCase):
         self.assertEqual((s.elevation, s.correction), (1471, None))
 
 
+class FlightTimeCorrectionTest(unittest.TestCase):
+    def test_target_higher_shorter_flight(self):
+        # Миномёт, з1, 500 м: time 28.3 с, time_per_100 0.7 с; цель выше на 200 м → −1.4 с
+        s = solve(MORTAR, 1, 500, "table", gun=0, target=200, correction=True)
+        self.assertAlmostEqual(s.flight_time, 28.3 - 1.4)
+        self.assertAlmostEqual(s.time_correction, -1.4)
+        self.assertEqual(s.base_flight_time, 28.3)
+
+    def test_target_lower_longer_flight(self):
+        s = solve(MORTAR, 1, 500, "table", gun=150, target=50, correction=True)
+        self.assertAlmostEqual(s.flight_time, 28.3 + 0.7)
+
+    def test_interpolated_time_per_100(self):
+        # Кувалда, з2: 14600 → 0.5, 14700 → 0.7; на 14650 м — 0.6 с на 100 м
+        s = solve(SLEDGE, 2, 14650, "nontable", gun=0, target=100, correction=True)
+        self.assertAlmostEqual(s.time_correction, -0.6)
+
+    def test_no_correction_keeps_table_time(self):
+        s = solve(MORTAR, 1, 500, "table", gun=0, target=200, correction=False)
+        self.assertEqual((s.flight_time, s.base_flight_time, s.time_correction), (28.3, 28.3, None))
+
+    def test_helper(self):
+        self.assertEqual(b.flight_time_correction(30.0, 1.0, 100, 100), (30.0, 0.0))
+        self.assertEqual(b.flight_time_correction(30.0, None, 0, 100), (30.0, 0.0))
+
+
 class ChargeHelpersTest(unittest.TestCase):
     def test_charge_range(self):
         self.assertEqual(b.charge_range(b.charge_rows(WEAPON_DATA, MORTAR, 1)), (150, 1950, 50))

@@ -12,6 +12,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+import field_rules as fr  # noqa: E402
 from ui_widgets import COLORS, wolf_shapes  # noqa: E402
 from version import APP_VERSION, REPOSITORY, WHATS_NEW  # noqa: E402
 from weapons_data import WEAPON_DATA  # noqa: E402
@@ -26,6 +27,14 @@ def render():
     def dump(value):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
+    rules = {
+        "displayNames": fr.DISPLAY_NAMES,
+        "heightRecommended": fr.HEIGHT_RECOMMENDED_M, "heightRequired": fr.HEIGHT_REQUIRED_M,
+        "highTarget": fr.HIGH_TARGET_M, "highTargetWeapon": fr.HIGH_TARGET_WEAPON,
+        "highTargetCharge": fr.HIGH_TARGET_CHARGE,
+        "dispersion": fr.DISPERSION_M, "dispersionFar": fr.DISPERSION_FAR_M,
+    }
+
     return (
         "// Сгенерировано tools/export_mobile.py из weapons_data.py и ui_widgets.py — не редактировать вручную.\n"
         "(function (root) {\n"
@@ -33,6 +42,7 @@ def render():
         f"  root.THEME_COLORS = {dump(COLORS)};\n"
         f"  root.WOLF_SHAPES = {dump(wolf)};\n"
         f"  root.APP_INFO = {dump({'version': APP_VERSION, 'repository': REPOSITORY, 'whatsNew': WHATS_NEW})};\n"
+        f"  root.FIELD_RULES = {dump(rules)};\n"
         "})(typeof globalThis !== \"undefined\" ? globalThis : this);\n"
     )
 

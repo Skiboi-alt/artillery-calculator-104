@@ -1,12 +1,13 @@
 // Офлайн-режим: все файлы приложения кэшируются при первом открытии.
 // При изменении любого файла увеличьте VERSION — телефоны получат обновление.
-const VERSION = "calc104-v2.1.0";
+const VERSION = "calc104-v2.1.0-2";  // -2: на Pages уже была ранняя сборка 2.1.0
 const FILES = [
   "./",
   "index.html",
   "styles.css",
   "app.js",
   "ballistics.js",
+  "field_rules.js",
   "data.js",
   "manifest.webmanifest",
   "icons/icon-192.png",

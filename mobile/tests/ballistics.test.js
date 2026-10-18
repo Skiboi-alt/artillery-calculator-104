@@ -127,6 +127,30 @@
   });
   test("формат как в Python", () => eq([B.g(525), B.g(525.5), B.g(15000)], ["525", "525.5", "15000"]));
 
+  // Корректировка огня
+  test("корректировка по дальности", () => {
+    eq(B.adjustFire(1000, 50, 0), [1050, 0]);
+    eq(B.adjustFire(1000, -100, 0), [900, 0]);
+  });
+  test("боковая корректировка", () => {
+    const [d, dir] = B.adjustFire(1000, 0, 100);
+    near(d, 1004.987562, 1e-5);
+    near(dir, 101.52, 0.005);
+    near(B.adjustFire(1000, 0, -100)[1], -101.52, 0.005);
+  });
+  test("45° = 800 мил", () => near(B.adjustFire(500, 0, 500)[1], 800));
+
+  // Сравнение зарядов
+  test("все подходящие заряды", () => {
+    const r = B.compareCharges(D, MORTAR, 400, "table");
+    eq(r.map(([c]) => c), [0, 1, 2]);
+    eq(r.map(([, s]) => s.elevation), [1127, 1497, 1550]);
+  });
+  test("табличный режим пропускает отсутствующие строки", () => {
+    eq(B.compareCharges(D, MORTAR, 525, "table"), []);
+    eq(B.compareCharges(D, MORTAR, 525, "nontable").length, 2);
+  });
+
   const failed = results.filter((r) => !r.ok);
   root.TEST_RESULTS = { total: results.length, failed: failed.length, results };
   if (isNode) {

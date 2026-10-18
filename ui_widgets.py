@@ -557,7 +557,7 @@ class ToggleSwitch(FocusableCanvas):
 class InputField(tk.Frame):
     """Подпись + поле ввода со скруглённой рамкой, подсказкой и единицей измерения"""
 
-    def __init__(self, parent, theme, label, parent_bg, suffix="", numeric=True, placeholder=""):
+    def __init__(self, parent, theme, label, parent_bg, suffix="", numeric=True, placeholder="", height=44):
         super().__init__(parent, bg=parent_bg)
         self.theme = theme
         self.suffix = suffix
@@ -569,12 +569,14 @@ class InputField(tk.Frame):
         self.dimmed = False
         self._placeholder_shown = False
 
+        # Без подписи (label="") — компактное поле, например «шаг корректировки»
         self.label = tk.Label(self, text=label.upper(), font=theme.caption, fg=COLORS["text_muted"],
                               bg=parent_bg, anchor="w")
-        self.label.pack(fill=tk.X, pady=(0, theme.px(6)))
+        if label:
+            self.label.pack(fill=tk.X, pady=(0, theme.px(6)))
 
         self.box = tk.Canvas(self, bg=parent_bg, highlightthickness=0, bd=0,
-                             height=theme.px(44), width=theme.px(120))
+                             height=theme.px(height), width=theme.px(60 if not label else 120))
         self.box.pack(fill=tk.X)
         self.entry = tk.Entry(
             self.box, font=theme.input, bg=COLORS["surface_2"], fg=COLORS["text"],

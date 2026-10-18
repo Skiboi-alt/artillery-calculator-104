@@ -51,6 +51,9 @@
     shownElevation: null,
     resultText: "",
     infoText: "",
+    lastSolution: null,
+    adjust: null,          // { base, along, lateral } — корректировка относительно линии орудие–цель
+    adjustStep: String(settings.adjust_step ?? "50"),
   };
 
   function persistSettings() {
@@ -61,6 +64,8 @@
       apply_height_correction: state.correction,
       inputs: Object.fromEntries(Object.entries(fields).map(([k, el]) => [k, el.value])),
       history: state.history.slice(0, MAX_HISTORY),
+      adjust_step: state.adjustStep,
+      last_version: window.APP_INFO.version,
     });
   }
 
@@ -249,10 +254,14 @@
   }
 
   function resetStats() {
+    stopTimer();
+    state.lastSolution = null;
     $("resTime").textContent = "—";
     $("resCorr").textContent = "—";
     $("resTime").className = $("resCorr").className = "stat-value";
     $("resDetail").textContent = "";
+    $("timerNote").textContent = "";
+    renderComparison([], null);
   }
 
   function showEmpty() {
@@ -281,7 +290,9 @@
     state.infoText = details;
   }
 
-  function showResult(solution, charge, distance, animate) {
+  function showResult(solution, charge, distance, animate, comparison = []) {
+    stopTimer();
+    state.lastSolution = solution;
     setPill(state.mode === "table" ? "Таблица" : "Интерполяция", "ok");
     const target = solution.elevation;
     resValue.className = "ok";
@@ -294,8 +305,10 @@
     }
     state.shownElevation = target;
 
-    $("resMessage").textContent = `${state.weapon} · заряд ${charge} · ${B.g(distance)} м`;
+    const direction = adjustDirectionText();
+    $("resMessage").textContent = `${state.weapon} · заряд ${charge} · ${B.g(distance)} м${direction ? ` · направление ${direction}` : ""}`;
     $("resMessage").className = "res-message";
+    renderComparison(comparison, charge);
     const { lowerRow: lo, upperRow: up } = solution;
     $("resDetail").textContent = lo === up
       ? `Строка таблицы: ${lo.range} м → ${lo.elev} MIL`
@@ -303,6 +316,7 @@
 
     $("resTime").textContent = `${solution.flightTime.toFixed(1)} с`;
     $("resTime").className = "stat-value on";
+    $("timerNote").textContent = "▶ таймер";
     if (solution.correction === null) {
       $("resCorr").textContent = "выкл";
       $("resCorr").className = "stat-value";
@@ -382,7 +396,9 @@
       return;
     }
 
-    showResult(solution, input.charge, input.distance, !silent);
+    const comparison = B.compareCharges(DATA, state.weapon, input.distance, state.mode,
+                                        input.gun, input.target, state.correction);
+    showResult(solution, input.charge, input.distance, !silent, comparison);
     addHistory(solution, input.charge, input.distance);
     persistSettings();
     if (!silent) {
@@ -670,6 +686,222 @@
           skipped ? "error" : "success");
   });
 
+  // ---------------------------------------------------------------- сравнение зарядов
+
+  function renderComparison(comparison, currentCharge) {
+    const row = $("compareRow");
+    row.innerHTML = "";
+    if (comparison.length < 2) return;
+    // Правило из методички: меньший заряд — снаряд летит быстрее
+    const fastest = comparison.reduce((a, b) => (b[1].flightTime < a[1].flightTime ? b : a))[0];
+    for (const [charge, s] of comparison) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = `chip${charge === currentCharge ? " active" : ""}`;
+      chip.innerHTML = `<b>з${charge}</b>${s.elevation.toFixed(1)} · ${s.flightTime.toFixed(0)} с${charge === fastest ? "<em>быстрее</em>" : ""}`;
+      chip.addEventListener("click", () => {
+        state.charge = String(charge);
+        chargeSeg.update();
+        updateChargeHint();
+        calculate();
+      });
+      row.appendChild(chip);
+    }
+  }
+
+  // ---------------------------------------------------------------- корректировка огня
+
+  function adjustDirectionText() {
+    if (!state.adjust || !state.adjust.lateral) return "";
+    const mils = B.adjustFire(state.adjust.base, state.adjust.along, state.adjust.lateral)[1];
+    return `${Math.abs(mils).toFixed(1)} MIL ${mils > 0 ? "вправо" : "влево"}`;
+  }
+
+  function updateAdjustStatus() {
+    const status = $("adjustStatus"), direction = $("adjustDirection");
+    if (!state.adjust) {
+      status.textContent = "";
+      direction.textContent = "Недолёт — дальше, перелёт — ближе";
+      direction.className = "adjust-direction";
+      return;
+    }
+    const { along, lateral } = state.adjust;
+    const parts = [];
+    if (along) parts.push(`${B.g(Math.abs(along))} м ${along > 0 ? "дальше" : "ближе"}`);
+    if (lateral) parts.push(`${B.g(Math.abs(lateral))} м ${lateral > 0 ? "правее" : "левее"}`);
+    status.textContent = parts.join(" · ") || "без сдвига";
+    if (lateral) {
+      const mils = B.adjustFire(state.adjust.base, along, lateral)[1];
+      direction.textContent = `Направление ${mils > 0 ? "+" : "−"}${Math.abs(mils).toFixed(1)} MIL`;
+      direction.className = "adjust-direction on";
+    } else {
+      direction.textContent = "Направление без изменений";
+      direction.className = "adjust-direction";
+    }
+  }
+
+  function adjustFire(kind) {
+    const step = parseNumber($("adjustStep").value);
+    if (step === null || step <= 0) {
+      $("adjustStep").focus();
+      toast("Шаг корректировки: введите число больше 0", "error");
+      return;
+    }
+    if (!state.adjust) {
+      const base = parseNumber(fields.distance.value);
+      if (base === null || base <= 0) {
+        markError("distance");
+        toast("Сначала введите дистанцию до цели", "error");
+        return;
+      }
+      state.adjust = { base, along: 0, lateral: 0 };
+    }
+    const [key, sign] = { short: ["along", 1], over: ["along", -1], left: ["lateral", -1], right: ["lateral", 1] }[kind];
+    state.adjust[key] += sign * step;
+
+    const distance = Math.round(B.adjustFire(state.adjust.base, state.adjust.along, state.adjust.lateral)[0] * 10) / 10;
+    fields.distance.value = B.g(distance);
+    // Дистанция после корректировки почти никогда не совпадает со строкой таблицы
+    if (state.mode === "table" && !B.tableLookup(B.chargeRows(DATA, state.weapon, state.charge), distance)) {
+      state.mode = "nontable";
+      modeSeg.update();
+      toast("Режим переключён на интерполяцию");
+    }
+    updateAdjustStatus();
+    updateChargeHint();
+    calculate();
+  }
+
+  function resetAdjust() {
+    if (!state.adjust) return;
+    fields.distance.value = B.g(state.adjust.base);
+    state.adjust = null;
+    updateAdjustStatus();
+    updateChargeHint();
+    calculate(true);
+  }
+
+  document.querySelectorAll("[data-adjust]").forEach((button) => {
+    button.addEventListener("click", () => adjustFire(button.dataset.adjust));
+  });
+  $("adjustReset").addEventListener("click", resetAdjust);
+  $("adjustStep").value = state.adjustStep;
+  $("adjustStep").addEventListener("input", () => { state.adjustStep = $("adjustStep").value; persistSettings(); });
+
+  // ---------------------------------------------------------------- таймер полёта
+
+  const SPLASH_WARNING_S = 5; // Сигнал «скоро разрыв» за 5 секунд
+  let timerFrame = null, timerEnd = 0, timerWarned = false, audio = null;
+
+  function beep(frequency, durationMs) {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audio.createOscillator(), gain = audio.createGain();
+      osc.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.25, audio.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + durationMs / 1000);
+      osc.connect(gain).connect(audio.destination);
+      osc.start();
+      osc.stop(audio.currentTime + durationMs / 1000);
+    } catch (e) { /* звук недоступен */ }
+  }
+
+  function toggleTimer() {
+    if (timerFrame !== null) {
+      stopTimer();
+      showFlightTime();
+      return;
+    }
+    if (!state.lastSolution) {
+      toast("Сначала выполните расчёт", "error");
+      return;
+    }
+    timerEnd = performance.now() + state.lastSolution.flightTime * 1000;
+    timerWarned = false;
+    $("timerBtn").classList.add("running");
+    beep(1200, 80);
+    vibrate(20);
+    tick();
+  }
+
+  function tick() {
+    const remaining = (timerEnd - performance.now()) / 1000;
+    const btn = $("timerBtn");
+    if (remaining <= 0) {
+      stopTimer();
+      beep(900, 600);
+      vibrate([200, 80, 200]);
+      toast("Разрыв!", "success");
+      btn.classList.remove("flash"); void btn.offsetWidth; btn.classList.add("flash");
+      showFlightTime();
+      return;
+    }
+    if (remaining <= SPLASH_WARNING_S && !timerWarned) {
+      timerWarned = true;
+      beep(1500, 150);
+      vibrate(60);
+    }
+    btn.classList.toggle("warn", remaining <= SPLASH_WARNING_S);
+    $("resTime").textContent = `${remaining.toFixed(1)} с`;
+    $("timerNote").textContent = remaining <= SPLASH_WARNING_S ? "скоро разрыв!" : "до разрыва · стоп";
+    timerFrame = requestAnimationFrame(tick);
+  }
+
+  function stopTimer() {
+    if (timerFrame !== null) cancelAnimationFrame(timerFrame);
+    timerFrame = null;
+    $("timerBtn").classList.remove("running", "warn");
+  }
+
+  function showFlightTime() {
+    if (!state.lastSolution) return;
+    $("resTime").textContent = `${state.lastSolution.flightTime.toFixed(1)} с`;
+    $("timerNote").textContent = "▶ таймер";
+  }
+
+  $("timerBtn").addEventListener("click", toggleTimer);
+
+  // ---------------------------------------------------------------- справка и «Что нового»
+
+  const HELP = [
+    ["Порядок расчёта", "Выберите орудие и заряд, введите дистанцию и нажмите «Рассчитать». Заряды, которые не достают до цели, приглушены. Методичка советует брать меньший заряд — снаряд летит быстрее; в строке зарядов самый быстрый помечен."],
+    ["Режимы", "«По таблице» — только дальности из таблицы (шаг 50 или 100 м). «Интерполяция» — любая дальность внутри диапазона заряда: значение берётся между двумя соседними строками."],
+    ["Поправка на превышение", "Учитывает разницу высот орудия и цели (высоты — с карты, над уровнем моря). Цель выше — возвышение уменьшается, ниже — увеличивается. Методичка: желательно от 50 м разницы, обязательно от 100 м."],
+    ["Корректировка огня", "После выстрела по докладу наблюдателя: «Недолёт» — дальше на шаг, «Перелёт» — ближе, «Левее»/«Правее» — сместить разрыв вбок. Сдвиги — относительно линии орудие–цель; дистанция пересчитывается, поправку направления (в милах, 6400 в круге) внесите в азимут. «Сброс» возвращает исходную дистанцию."],
+    ["Таймер полёта", "Нажмите на «Время полёта» — обратный отсчёт до разрыва. Короткий сигнал за 5 секунд, длинный — в момент разрыва (и вибрация на Android). Повторное нажатие — стоп."],
+    ["Сохранения", "Значок папки — список сохранений, импорт и экспорт saves.json: формат общий с программой для ПК."],
+  ];
+
+  function showHelp() {
+    const sections = HELP.map(([title, text]) =>
+      `<div class="help-section"><span class="caption">${escapeHtml(title)}</span><p>${escapeHtml(text)}</p></div>`).join("");
+    openSheet(`
+      <h2>Справка</h2>
+      <p>Артиллерийский калькулятор 104-го ДОБ · версия ${escapeHtml(window.APP_INFO.version)}</p>
+      ${sections}
+      <div class="links"><a href="https://github.com/${escapeHtml(window.APP_INFO.repository)}" target="_blank" rel="noopener">Проект на GitHub</a></div>
+      <div class="buttons">
+        <button class="btn secondary" data-act="news" type="button">Что нового</button>
+        <button class="btn primary" data-act="close" type="button">Закрыть</button>
+      </div>`);
+    sheet.querySelector('[data-act="close"]').onclick = closeSheet;
+    sheet.querySelector('[data-act="news"]').onclick = () => { closeSheet(); setTimeout(showWhatsNew, 300); };
+  }
+
+  function showWhatsNew() {
+    const version = window.APP_INFO.version;
+    const items = (window.APP_INFO.whatsNew[version] || []).map((t) => `<li>${escapeHtml(t)}</li>`).join("");
+    openSheet(`
+      <h2>Что нового в версии ${escapeHtml(version)}</h2>
+      <ul class="news">${items}</ul>
+      <div class="buttons" style="grid-template-columns:1fr">
+        <button class="btn primary" data-act="close" type="button">Понятно</button>
+      </div>`);
+    sheet.querySelector('[data-act="close"]').onclick = closeSheet;
+  }
+
+  $("helpBtn").addEventListener("click", showHelp);
+
   // ---------------------------------------------------------------- установка на телефон
 
   let installEvent = null;
@@ -714,7 +946,11 @@
     input.value = String((settings.inputs || {})[name] ?? "");
     input.addEventListener("input", () => {
       input.closest(".field").classList.remove("error");
-      if (name === "distance") updateChargeHint();
+      if (name === "distance") {
+        // Дистанцию изменили вручную — прежняя корректировка к ней больше не относится
+        if (state.adjust) { state.adjust = null; updateAdjustStatus(); }
+        updateChargeHint();
+      }
     });
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); calculate(); } });
     input.addEventListener("change", persistSettings);
@@ -734,6 +970,10 @@
   updateSavesBadge();
   renderHistory();
   showEmpty();
+
+  // «Что нового» — только для тех, кто уже пользовался прошлой версией
+  if (settings.history && settings.last_version !== window.APP_INFO.version) setTimeout(showWhatsNew, 700);
+  persistSettings();
 
   // Для отладки и автоматических проверок
   window.App = { state, calculate, applyValues, saves };

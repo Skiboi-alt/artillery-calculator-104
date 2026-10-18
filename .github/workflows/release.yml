@@ -1,0 +1,71 @@
+# Сборка exe и релиз на GitHub.
+#   • Тег vX.Y.Z (git tag v2.1.0 && git push --tags) — тесты, сборка, релиз с exe.
+#   • Запуск вручную (Actions → «Сборка exe» → Run workflow) — пробная сборка без релиза,
+#     exe можно скачать из артефактов запуска.
+name: Сборка exe
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONIOENCODING: utf-8
+  EXE_NAME: Artillery-Calculator-104.exe
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установка PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Тег совпадает с версией программы
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          VERSION=$(python -c "import version; print(version.APP_VERSION)")
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "Тег ${GITHUB_REF_NAME} не совпадает с APP_VERSION=${VERSION} в version.py"
+            exit 1
+          fi
+
+      - name: Тесты и сборка
+        run: python build.py
+
+      - name: Имя файла для релиза
+        shell: bash
+        run: cp dist/*.exe "$EXE_NAME"
+
+      - name: Описание релиза
+        run: python tools/release_notes.py > notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe
+          path: |
+            ${{ env.EXE_NAME }}
+            notes.md
+
+      - name: Релиз на GitHub
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$EXE_NAME#Артиллерийский калькулятор 104-го ДОБ (Windows, exe)" --clobber
+          else
+            gh release create "$TAG" "$EXE_NAME#Артиллерийский калькулятор 104-го ДОБ (Windows, exe)" \
+              --title "$TAG — Артиллерийский калькулятор 104-го ДОБ" --notes-file notes.md
+          fi

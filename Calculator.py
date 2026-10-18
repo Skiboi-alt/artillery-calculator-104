@@ -5,18 +5,30 @@
     ballistics.py   — расчёт возвышения (покрыт тестами в tests/)
     storage.py      — сохранения, настройки, журнал ошибок
     ui_widgets.py   — тема и компоненты интерфейса
+    version.py      — номер версии и «Что нового»
+    updater.py      — проверка новой версии на GitHub
     Calculator.py   — окно программы (этот файл, точка входа)
 """
 
 import math
 import os
+import queue
 import sys
+import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+import webbrowser
+
+try:
+    import winsound
+except ImportError:  # Не Windows — вместо писка будет системный сигнал Tk
+    winsound = None
 
 import ballistics
+import updater
 from storage import Store, get_resource_path, log, setup_logging
+from version import APP_VERSION, MOBILE_URL, REPOSITORY, WHATS_NEW
 from ui_widgets import (
     COLORS, HistoryList, InputField, RoundedButton, RoundedPanel, SegmentedControl, Theme,
     ToggleSwitch, Tween, apply_dark_titlebar, draw_armor_stripes, draw_wolf, enable_dpi_awareness, round_rect,
@@ -25,6 +37,8 @@ from weapons_data import WEAPON_DATA
 
 MAX_SAVES = 10
 MAX_HISTORY = 20
+SPLASH_WARNING_S = 5          # Сигнал «скоро разрыв» за 5 секунд, как в артиллерии
+UPDATE_CHECK_INTERVAL_S = 24 * 3600
 
 
 class InputError(ValueError):
@@ -77,6 +91,16 @@ class ArtilleryCalculator:
         self.info_text = ""
         self.toast = None
         self.shown_elevation = None
+        self.last_solution = None
+        # Корректировка огня: исходная дистанция и накопленные сдвиги (м) относительно линии орудие–цель
+        self.adjust = None
+        self.adjust_step = tk.StringVar(value=str(settings.get("adjust_step", "50")))
+        # Таймер полёта
+        self.timer_job = None
+        self.timer_end = None
+        self.timer_warned = False
+        self.update_queue = queue.Queue()
+        self.update_url = None
 
         self._setup_geometry(settings.get("geometry"))
         self.setup_ui()
@@ -89,11 +113,18 @@ class ArtilleryCalculator:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         apply_dark_titlebar(self.root, COLORS["bg"])
 
+        # «Что нового» — только для тех, кто уже пользовался прошлой версией
+        last_version = settings.get("last_version")
+        settings["last_version"] = APP_VERSION
+        if settings and last_version != APP_VERSION and ("history" in settings or self.saved_values):
+            self.root.after(600, self.show_whats_new)
+        self._start_update_check()
+
     def _setup_geometry(self, saved):
         """Размер окна под двухколоночную раскладку; последнее положение, если оно на экране"""
         px = self.theme.px
         screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        min_w, min_h = min(screen_w, px(880)), min(screen_h - px(60), px(680))
+        min_w, min_h = min(screen_w, px(880)), min(screen_h - px(60), px(760))
         self.root.minsize(min_w, min_h)
         try:
             size, x, y = saved.split("+")[0], int(saved.split("+")[1]), int(saved.split("+")[2])
@@ -104,7 +135,7 @@ class ArtilleryCalculator:
         except (AttributeError, ValueError, IndexError):
             pass
         w = min(screen_w, px(1000))
-        h = min(screen_h - px(60), px(740))
+        h = min(screen_h - px(60), px(820))
         self.root.geometry(f"{w}x{h}+{max(0, (screen_w - w) // 2)}+{max(0, (screen_h - h) // 2 - px(20))}")
 
     # ------------------------------------------------------------------
@@ -119,6 +150,7 @@ class ArtilleryCalculator:
             pass
 
     def _on_close(self):
+        self._stop_timer()
         self._save_settings()
         self.root.destroy()
 
@@ -132,6 +164,8 @@ class ArtilleryCalculator:
             "apply_height_correction": self.apply_height_correction.get(),
             "inputs": {name: field.get() for name, field in self.entries.items()},
             "history": self.history[:MAX_HISTORY],
+            "adjust_step": self.adjust_step.get(),
+            "last_version": APP_VERSION,
         })
         self.store.write_settings()
 
@@ -167,6 +201,8 @@ class ArtilleryCalculator:
         # Ctrl+S / Ctrl+O ловим по коду физической клавиши: <Control-s> не срабатывает
         # при русской раскладке (приходит «ы»/«щ») и при включённом Caps Lock
         self.root.bind("<Control-KeyPress>", self._on_ctrl_shortcut)
+        self.root.bind("<F1>", lambda e: self.show_help())
+        self.root.bind("<F2>", lambda e: self.toggle_timer())
 
     def _on_ctrl_shortcut(self, event):
         action = self.SHORTCUT_KEYCODES.get(event.keycode)
@@ -203,7 +239,7 @@ class ArtilleryCalculator:
         subtitle.pack(anchor="w")
         tk.Label(subtitle, text="104-Й ДОБ  «ВОЛЧЬЯ СТАЯ»", font=self.theme.caption,
                  fg=COLORS["text"], bg=COLORS["bg"]).pack(side=tk.LEFT)
-        tk.Label(subtitle, text="   ·   ARMA 3   ·   RS:Q", font=self.theme.subtitle,
+        tk.Label(subtitle, text=f"   ·   ARMA 3   ·   RS:Q   ·   v{APP_VERSION}", font=self.theme.subtitle,
                  fg=COLORS["text_muted"], bg=COLORS["bg"]).pack(side=tk.LEFT)
 
         self.saves_button = RoundedButton(
@@ -212,6 +248,11 @@ class ArtilleryCalculator:
         )
         self.saves_button.pack(side=tk.RIGHT)
         self._update_saves_button()
+        RoundedButton(header, self.theme, "?", self.show_help, COLORS["bg"],
+                      variant="secondary", height=38, width=38).pack(side=tk.RIGHT, padx=(0, px(8)))
+        # Появляется, только если на GitHub есть версия новее
+        self.update_button = RoundedButton(header, self.theme, "", self._open_update, COLORS["bg"],
+                                           variant="primary", height=38, width=190)
 
     def _card_title(self, parent, text):
         """Заголовок карточки с маркировкой как на броне 104-го"""
@@ -270,7 +311,7 @@ class ArtilleryCalculator:
                                               suffix="м", placeholder="например, 1250")
         self.entries["distance"].pack(fill=tk.X, pady=(0, px(14)))
         # Подсказка зарядов обновляется при вводе дистанции (сам расчёт — по Enter/кнопке)
-        self.entries["distance"].entry.bind("<KeyRelease>", lambda e: self._update_charge_hint(), add="+")
+        self.entries["distance"].entry.bind("<KeyRelease>", self._on_distance_key, add="+")
 
         heights = tk.Frame(inner, bg=surface)
         heights.pack(fill=tk.X, pady=(0, px(16)))
@@ -307,7 +348,44 @@ class ArtilleryCalculator:
             widget.bind("<Button-1>", lambda e: toggle.toggle())
         self.apply_height_correction.trace_add("write", lambda *args: self._on_correction_change())
 
+        self._create_adjust_panel(inner)
         return card
+
+    def _create_adjust_panel(self, parent):
+        """Корректировка огня по докладу наблюдателя (относительно линии орудие–цель)"""
+        px = self.theme.px
+        surface = COLORS["surface"]
+        tk.Frame(parent, bg=COLORS["border"], height=1).pack(fill=tk.X, pady=(px(16), px(14)))
+
+        head = tk.Frame(parent, bg=surface)
+        head.pack(fill=tk.X, pady=(0, px(6)))
+        self._caption(head, "Корректировка огня").pack(side=tk.LEFT)
+        self.adjust_status = tk.Label(head, text="", font=self.theme.small, fg=COLORS["text_muted"], bg=surface)
+        self.adjust_status.pack(side=tk.RIGHT)
+
+        buttons = tk.Frame(parent, bg=surface)
+        buttons.pack(fill=tk.X)
+        actions = [("Недолёт", "short"), ("Перелёт", "over"), ("Левее", "left"), ("Правее", "right")]
+        for i, (text, kind) in enumerate(actions):
+            buttons.columnconfigure(i, weight=1, uniform="adj")
+            RoundedButton(buttons, self.theme, text, lambda k=kind: self.adjust_fire(k), surface,
+                          variant="secondary", height=38).grid(
+                row=0, column=i, sticky="ew", padx=(0 if i == 0 else px(4), 0 if i == 3 else px(4)))
+
+        row = tk.Frame(parent, bg=surface)
+        row.pack(fill=tk.X, pady=(px(8), 0))
+        tk.Label(row, text="Шаг", font=self.theme.small, fg=COLORS["text_muted"], bg=surface).pack(side=tk.LEFT)
+        self.adjust_field = InputField(row, self.theme, "", surface, suffix="м", height=34)
+        self.adjust_field.pack(side=tk.LEFT, padx=(px(8), px(10)))
+        self.adjust_field.box.config(width=px(96))
+        self.adjust_field.set(self.adjust_step.get())
+        self.adjust_field.entry.bind("<KeyRelease>", lambda e: self.adjust_step.set(self.adjust_field.get()), add="+")
+        self.adjust_direction = tk.Label(row, text="Недолёт — дальше, перелёт — ближе", font=self.theme.small,
+                                         fg=COLORS["text_faint"], bg=surface, anchor="w")
+        self.adjust_reset = RoundedButton(row, self.theme, "Сброс", self.reset_adjust, surface,
+                                          variant="secondary", height=34, width=72)
+        self.adjust_reset.pack(side=tk.RIGHT)
+        self.adjust_direction.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
     def _create_result_card(self, parent):
         px = self.theme.px
@@ -342,6 +420,10 @@ class ArtilleryCalculator:
                                    bg=surface, anchor="w", justify=tk.LEFT)
         self.res_detail.pack(fill=tk.X, pady=(px(2), 0))
 
+        # Сравнение зарядов: по всем, которые дают решение (появляется, если их больше одного)
+        self.compare_frame = tk.Frame(inner, bg=surface)
+        self.compare_frame.pack(fill=tk.X)
+
         # Дополнительные показатели
         stats = tk.Frame(inner, bg=surface)
         stats.pack(fill=tk.X, pady=(px(14), 0))
@@ -351,6 +433,10 @@ class ArtilleryCalculator:
         self.stat_time.grid(row=0, column=0, sticky="ew", padx=(0, px(6)))
         self.stat_correction = self._create_stat_tile(stats, "Поправка")
         self.stat_correction.grid(row=0, column=1, sticky="ew", padx=(px(6), 0))
+        # Клик по плитке времени (или F2) — таймер до разрыва
+        for widget in [self.stat_time, self.stat_time.inner] + self.stat_time.inner.winfo_children():
+            widget.bind("<Button-1>", lambda e: self.toggle_timer())
+            widget.config(cursor="hand2")
 
         # Кнопки прижаты к низу карточки
         buttons = tk.Frame(inner, bg=surface)
@@ -359,7 +445,7 @@ class ArtilleryCalculator:
                       variant="primary", height=50, font=self.theme.button_large).pack(fill=tk.X)
         RoundedButton(buttons, self.theme, "Сохранить как…", self.save_current_values, surface,
                       variant="secondary", height=42).pack(fill=tk.X, pady=(px(10), 0))
-        tk.Label(buttons, text="Enter — расчёт   ·   Ctrl+S — сохранить   ·   Ctrl+O — открыть",
+        tk.Label(buttons, text="Enter — расчёт   ·   F2 — таймер   ·   Ctrl+S / Ctrl+O   ·   F1 — справка",
                  font=self.theme.small, fg=COLORS["text_faint"], bg=surface).pack(pady=(px(10), 0))
 
         # Между показателями и кнопками — история расчётов (пока пусто — водяной знак стаи)
@@ -399,10 +485,13 @@ class ArtilleryCalculator:
         self.res_value.config(text=f"{value:.1f}")
 
     def _reset_tiles(self):
+        self._stop_timer()
+        self.last_solution = None
         for tile in (self.stat_time, self.stat_correction):
             tile.value.config(text="—", fg=COLORS["text_faint"])
             tile.note.config(text="")
         self.res_detail.config(text="")
+        self._render_comparison([], None)
 
     def _show_empty_result(self):
         self.value_tween.stop()
@@ -427,7 +516,9 @@ class ArtilleryCalculator:
         self.result_text = f"❌ {title}"
         self.info_text = details
 
-    def _show_result(self, solution, charge, distance, animate=True):
+    def _show_result(self, solution, charge, distance, animate=True, comparison=()):
+        self._stop_timer()
+        self.last_solution = solution
         mode = "Таблица" if self.calculation_mode.get() == "table" else "Интерполяция"
         self._set_status_pill(mode, "ok")
 
@@ -443,10 +534,12 @@ class ArtilleryCalculator:
         self.shown_elevation = target
 
         self.res_unit.config(fg=COLORS["text_muted"])
-        self.res_message.config(
-            text=f"{self.get_current_weapon_name()}  ·  заряд {charge}  ·  {distance:g} м",
-            fg=COLORS["text_muted"],
-        )
+        message = f"{self.get_current_weapon_name()}  ·  заряд {charge}  ·  {distance:g} м"
+        direction = self._adjust_direction_text()
+        if direction:
+            message += f"  ·  направление {direction}"
+        self.res_message.config(text=message, fg=COLORS["text_muted"])
+        self._render_comparison(comparison, charge)
         lower, upper = solution.lower_row, solution.upper_row
         if lower is upper:
             self.res_detail.config(text=f"Строка таблицы: {lower['range']} м → {lower['elev']} MIL")
@@ -456,7 +549,7 @@ class ArtilleryCalculator:
             )
 
         self.stat_time.value.config(text=f"{solution.flight_time:.1f} с", fg=COLORS["text"])
-        self.stat_time.note.config(text="до разрыва")
+        self.stat_time.note.config(text="▶ таймер — клик или F2", fg=COLORS["text_faint"])
         if solution.correction is None:
             self.stat_correction.value.config(text="выкл", fg=COLORS["text_faint"])
             self.stat_correction.note.config(text="без учёта высот")
@@ -988,8 +1081,311 @@ class ArtilleryCalculator:
             self._show_error_result(e.title, e.details)
             return
 
-        self._show_result(solution, charge, distance, animate=not silent)
+        comparison = ballistics.compare_charges(
+            self.weapon_data, self.weapon_index, self.get_current_weapon_name(), distance,
+            self.calculation_mode.get(), user_height, target_height, self.apply_height_correction.get(),
+        )
+        self._show_result(solution, charge, distance, animate=not silent, comparison=comparison)
         self._add_history(solution, charge, distance)
+
+    # ------------------------------------------------------------------
+    # Сравнение зарядов
+    # ------------------------------------------------------------------
+
+    def _render_comparison(self, comparison, current_charge):
+        """Плашки «заряд · возвышение · время» по всем подходящим зарядам; клик — выбрать заряд"""
+        for child in self.compare_frame.winfo_children():
+            child.destroy()
+        if len(comparison) < 2:
+            return
+        px = self.theme.px
+        surface = COLORS["surface"]
+        # Правило из методички: меньший заряд — снаряд летит быстрее, противник успевает меньше
+        fastest = min(comparison, key=lambda item: item[1].flight_time)[0]
+        row = tk.Frame(self.compare_frame, bg=surface)
+        row.pack(fill=tk.X, pady=(px(10), 0))
+        self._caption(row, "Заряды").pack(side=tk.LEFT, padx=(0, px(8)))
+        font = tkfont.Font(root=self.root, font=self.theme.small)
+        for charge, solution in comparison:
+            text = f"з{charge}   {solution.elevation:.1f}   {solution.flight_time:.0f} с"
+            if charge == fastest:
+                text += "   быстрее"
+            active = charge == current_charge
+            w, h = font.measure(text) + px(20), px(26)
+            chip = tk.Canvas(row, width=w, height=h, bg=surface, highlightthickness=0, bd=0, cursor="hand2")
+            chip.pack(side=tk.LEFT, padx=(0, px(6)))
+            round_rect(chip, 1, 1, w - 1, h - 1, px(7),
+                       fill=COLORS["surface_3"] if active else COLORS["surface_2"],
+                       outline=COLORS["accent"] if active else COLORS["border"])
+            chip.create_text(w / 2, h / 2, text=text, font=self.theme.small,
+                             fill=COLORS["text"] if active else COLORS["text_muted"])
+            chip.bind("<Button-1>", lambda e, c=charge: self._select_charge(c))
+
+    def _select_charge(self, charge):
+        self.charge_var.set(str(charge))
+        self._update_charge_hint()
+        self.calculate()
+
+    # ------------------------------------------------------------------
+    # Корректировка огня
+    # ------------------------------------------------------------------
+
+    def adjust_fire(self, kind):
+        """Недолёт → дальше, перелёт → ближе, левее/правее — сместить разрыв вбок на шаг"""
+        try:
+            step = float(self.adjust_field.get().strip().replace(",", "."))
+            if not math.isfinite(step) or step <= 0:
+                raise ValueError
+        except ValueError:
+            self.adjust_field.mark_error()
+            self.show_notification("Шаг корректировки: введите число больше 0", notification_type="error")
+            return
+        if self.adjust is None:
+            base = self._current_distance()
+            if base is None:
+                self.entries["distance"].mark_error()
+                self.show_notification("Сначала введите дистанцию до цели", notification_type="error")
+                return
+            self.adjust = {"base": base, "along": 0.0, "lateral": 0.0}
+        key, sign = {"short": ("along", 1), "over": ("along", -1), "left": ("lateral", -1),
+                     "right": ("lateral", 1)}[kind]
+        self.adjust[key] += sign * step
+
+        distance, _ = ballistics.adjust_fire(self.adjust["base"], self.adjust["along"], self.adjust["lateral"])
+        distance = round(distance, 1)
+        self.entries["distance"].set(f"{distance:g}")
+        # Дистанция после корректировки почти никогда не совпадает со строкой таблицы
+        if self.calculation_mode.get() == "table" and \
+                ballistics.table_lookup(self.weapon_index, self.get_current_weapon_name(),
+                                        int(self.charge_var.get() or 0), distance) is None:
+            self.calculation_mode.set("nontable")
+            self.show_notification("Режим переключён на интерполяцию")
+        self._update_adjust_status()
+        self._update_charge_hint()
+        self.calculate()
+
+    def reset_adjust(self):
+        if self.adjust is None:
+            return
+        self.entries["distance"].set(f"{self.adjust['base']:g}")
+        self.adjust = None
+        self._update_adjust_status()
+        self._update_charge_hint()
+        self.calculate(silent=True)
+
+    def _adjust_direction_text(self):
+        if not self.adjust or not self.adjust["lateral"]:
+            return ""
+        _, direction = ballistics.adjust_fire(self.adjust["base"], self.adjust["along"], self.adjust["lateral"])
+        return f"{abs(direction):.1f} MIL {'вправо' if direction > 0 else 'влево'}"
+
+    def _update_adjust_status(self):
+        if not self.adjust:
+            self.adjust_status.config(text="")
+            self.adjust_direction.config(text="Недолёт — дальше, перелёт — ближе", fg=COLORS["text_faint"])
+            return
+        parts = []
+        if self.adjust["along"]:
+            parts.append(f"{abs(self.adjust['along']):g} м {'дальше' if self.adjust['along'] > 0 else 'ближе'}")
+        if self.adjust["lateral"]:
+            parts.append(f"{abs(self.adjust['lateral']):g} м {'правее' if self.adjust['lateral'] > 0 else 'левее'}")
+        self.adjust_status.config(text=" · ".join(parts) or "без сдвига")
+        # Короткая запись, чтобы влезала рядом с полем шага: + вправо, − влево
+        _, mils = ballistics.adjust_fire(self.adjust["base"], self.adjust["along"], self.adjust["lateral"])
+        text = f"Направление {'+' if mils > 0 else '−'}{abs(mils):.1f} MIL" if self.adjust["lateral"] \
+            else "Направление без изменений"
+        self.adjust_direction.config(text=text, fg=COLORS["text"] if self.adjust["lateral"] else COLORS["text_muted"])
+
+    def _on_distance_key(self, event):
+        # Enter, Tab и стрелки не меняют число — корректировку не сбрасываем
+        if event.keysym in ("Return", "KP_Enter", "Tab", "Left", "Right", "Up", "Down", "Home", "End",
+                            "Shift_L", "Shift_R", "Control_L", "Control_R", "F1", "F2"):
+            return
+        self._on_distance_typed()
+
+    def _on_distance_typed(self):
+        # Дистанцию изменили вручную — прежняя корректировка больше не относится к ней
+        if self.adjust is not None:
+            self.adjust = None
+            self._update_adjust_status()
+        self._update_charge_hint()
+
+    # ------------------------------------------------------------------
+    # Таймер полёта
+    # ------------------------------------------------------------------
+
+    def toggle_timer(self):
+        if self.timer_job is not None:
+            self._stop_timer()
+            self._show_flight_time()
+            return
+        if self.last_solution is None:
+            self.show_notification("Сначала выполните расчёт", notification_type="error")
+            return
+        self.timer_end = time.perf_counter() + self.last_solution.flight_time
+        self.timer_warned = False
+        self.stat_time.base_border = self.stat_time.border = COLORS["accent"]
+        self.stat_time._redraw()
+        self._beep(1200, 80)
+        self._timer_tick()
+
+    def _timer_tick(self):
+        remaining = self.timer_end - time.perf_counter()
+        if remaining <= 0:
+            self._stop_timer()
+            self._beep(900, 600)
+            self.show_notification("Разрыв!", notification_type="success")
+            self.stat_time.flash(COLORS["accent"])
+            self._show_flight_time()
+            return
+        if remaining <= SPLASH_WARNING_S and not self.timer_warned:
+            self.timer_warned = True
+            self._beep(1500, 150)
+        warn = remaining <= SPLASH_WARNING_S
+        self.stat_time.value.config(text=f"{remaining:.1f} с", fg=COLORS["accent"] if warn else COLORS["text"])
+        self.stat_time.note.config(text="скоро разрыв!" if warn else "до разрыва · F2 — стоп",
+                                   fg=COLORS["accent"] if warn else COLORS["text_muted"])
+        self.timer_job = self.root.after(50, self._timer_tick)
+
+    def _stop_timer(self):
+        if self.timer_job is not None:
+            self.root.after_cancel(self.timer_job)
+            self.timer_job = None
+        if hasattr(self, "stat_time"):
+            self.stat_time.base_border = self.stat_time.border = COLORS["border"]
+            self.stat_time._redraw()
+
+    def _show_flight_time(self):
+        if self.last_solution is not None:
+            self.stat_time.value.config(text=f"{self.last_solution.flight_time:.1f} с", fg=COLORS["text"])
+            self.stat_time.note.config(text="▶ таймер — клик или F2", fg=COLORS["text_faint"])
+
+    def _beep(self, frequency, duration_ms):
+        """Звуковой сигнал без подвисания окна (winsound.Beep блокирует — запускаем в потоке)"""
+        if winsound is not None:
+            threading.Thread(target=winsound.Beep, args=(frequency, duration_ms), daemon=True).start()
+        else:
+            self.root.bell()
+
+    # ------------------------------------------------------------------
+    # Справка, «Что нового», обновления
+    # ------------------------------------------------------------------
+
+    HELP_SECTIONS = [
+        ("Порядок расчёта",
+         "Выберите орудие и заряд, введите дистанцию до цели и нажмите «Рассчитать» (Enter). "
+         "Заряды, которые не достают до цели, приглушены. Методичка советует брать меньший заряд — "
+         "снаряд летит быстрее; в строке «Заряды» самый быстрый помечен."),
+        ("Режимы",
+         "«По таблице» — только дальности из таблицы (шаг 50 или 100 м). «Интерполяция» — любая "
+         "дальность внутри диапазона заряда: значение берётся между двумя соседними строками таблицы."),
+        ("Поправка на превышение",
+         "Учитывает разницу высот орудия и цели (высоты — с карты, над уровнем моря). Цель выше — "
+         "возвышение уменьшается, ниже — увеличивается. Методичка: желательно от 50 м разницы, "
+         "обязательно от 100 м."),
+        ("Корректировка огня",
+         "После выстрела по докладу наблюдателя: «Недолёт» — дальше на шаг, «Перелёт» — ближе, "
+         "«Левее» / «Правее» — сместить разрыв вбок. Сдвиги считаются относительно линии орудие–цель; "
+         "дистанция пересчитывается, а поправку направления (в милах, 6400 в круге) нужно внести в азимут. "
+         "«Сброс» возвращает исходную дистанцию."),
+        ("Таймер полёта",
+         "Клик по плитке «Время полёта» или F2 — обратный отсчёт до разрыва. Короткий сигнал за "
+         "5 секунд, длинный — в момент разрыва. Повторное нажатие останавливает таймер."),
+        ("Клавиши",
+         "Enter — расчёт · F2 — таймер · F1 — справка · Ctrl+S — сохранить · Ctrl+O — сохранения · "
+         "Tab — по элементам · ←/→ — переключатели · пробел — тумблер и кнопки."),
+    ]
+
+    def show_help(self):
+        px = self.theme.px
+        dialog = self._make_dialog("Справка")
+        body = tk.Frame(dialog, bg=COLORS["surface"])
+        body.pack(padx=px(26), pady=px(22))
+        tk.Label(body, text="Справка", font=self.theme.title, fg=COLORS["text"],
+                 bg=COLORS["surface"]).pack(anchor="w")
+        tk.Label(body, text=f"Артиллерийский калькулятор 104-го ДОБ · версия {APP_VERSION}", font=self.theme.small,
+                 fg=COLORS["text_muted"], bg=COLORS["surface"]).pack(anchor="w", pady=(0, px(10)))
+        for title, text in self.HELP_SECTIONS:
+            self._caption(body, title).pack(fill=tk.X, pady=(px(10), px(3)))
+            tk.Label(body, text=text, font=self.theme.body, fg=COLORS["text"], bg=COLORS["surface"],
+                     wraplength=px(540), justify=tk.LEFT, anchor="w").pack(fill=tk.X)
+        links = tk.Frame(body, bg=COLORS["surface"])
+        links.pack(fill=tk.X, pady=(px(14), 0))
+        for text, url in (("Проект на GitHub", f"https://github.com/{REPOSITORY}"),
+                          ("Версия для телефона", MOBILE_URL)):
+            link = tk.Label(links, text=text, font=self.theme.body_strong, fg=COLORS["accent"],
+                            bg=COLORS["surface"], cursor="hand2")
+            link.pack(side=tk.LEFT, padx=(0, px(18)))
+            link.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
+        row = tk.Frame(body, bg=COLORS["surface"])
+        row.pack(fill=tk.X, pady=(px(18), 0))
+        RoundedButton(row, self.theme, "Что нового", lambda: (dialog.destroy(), self.show_whats_new()),
+                      COLORS["surface"], variant="secondary", height=40, width=150).pack(side=tk.LEFT)
+        RoundedButton(row, self.theme, "Закрыть", dialog.destroy, COLORS["surface"],
+                      variant="primary", height=40, width=150).pack(side=tk.RIGHT)
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dialog.bind("<Return>", lambda e: dialog.destroy())
+        self._show_dialog(dialog)
+
+    def show_whats_new(self):
+        px = self.theme.px
+        dialog = self._make_dialog("Что нового")
+        body = tk.Frame(dialog, bg=COLORS["surface"])
+        body.pack(padx=px(26), pady=px(22))
+        tk.Label(body, text=f"Что нового в версии {APP_VERSION}", font=self.theme.title, fg=COLORS["text"],
+                 bg=COLORS["surface"]).pack(anchor="w", pady=(0, px(10)))
+        for item in WHATS_NEW.get(APP_VERSION, []):
+            line = tk.Frame(body, bg=COLORS["surface"])
+            line.pack(fill=tk.X, pady=(px(4), 0))
+            tk.Label(line, text="—", font=self.theme.body, fg=COLORS["text_faint"],
+                     bg=COLORS["surface"]).pack(side=tk.LEFT, anchor="n", padx=(0, px(8)))
+            tk.Label(line, text=item, font=self.theme.body, fg=COLORS["text"], bg=COLORS["surface"],
+                     wraplength=px(480), justify=tk.LEFT, anchor="w").pack(side=tk.LEFT, fill=tk.X)
+        RoundedButton(body, self.theme, "Понятно", dialog.destroy, COLORS["surface"],
+                      variant="primary", height=40).pack(fill=tk.X, pady=(px(18), 0))
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dialog.bind("<Return>", lambda e: dialog.destroy())
+        self._show_dialog(dialog)
+
+    def _start_update_check(self):
+        """Проверка новой версии на GitHub в фоне — не чаще раза в сутки"""
+        settings = self.store.settings
+        known = settings.get("update_available")
+        if isinstance(known, dict) and updater.is_newer(known.get("tag", "")):
+            self._show_update(known["tag"], known.get("url"))
+        if time.time() - float(settings.get("last_update_check", 0) or 0) < UPDATE_CHECK_INTERVAL_S:
+            return
+
+        def worker():
+            self.update_queue.put(updater.check_for_update())
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.root.after(500, self._poll_update)
+
+    def _poll_update(self):
+        try:
+            result = self.update_queue.get_nowait()
+        except queue.Empty:
+            self.root.after(500, self._poll_update)
+            return
+        self.store.settings["last_update_check"] = time.time()
+        if result:
+            tag, url = result
+            self.store.settings["update_available"] = {"tag": tag, "url": url}
+            self._show_update(tag, url)
+            self.show_notification(f"Доступна новая версия {tag}")
+        else:
+            self.store.settings.pop("update_available", None)
+
+    def _show_update(self, tag, url):
+        self.update_url = url or f"https://github.com/{REPOSITORY}/releases/latest"
+        self.update_button.set_text(f"Обновление {tag}")
+        if not self.update_button.winfo_ismapped():
+            self.update_button.pack(side=tk.RIGHT, padx=(0, self.theme.px(8)))
+
+    def _open_update(self):
+        if self.update_url:
+            webbrowser.open(self.update_url)
 
     def run(self):
         self.root.mainloop()

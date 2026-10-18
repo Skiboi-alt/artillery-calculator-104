@@ -8,9 +8,12 @@
       цель выше орудия → возвышение уменьшается, ниже → увеличивается.
 """
 
+import math
 from bisect import bisect_left
 from dataclasses import dataclass
 from typing import Optional
+
+MILS_PER_CIRCLE = 6400  # Угломер НАТО, как в Arma 3
 
 
 @dataclass
@@ -134,6 +137,32 @@ def solve(weapon_data, index, weapon, charge, distance, mode, gun_height=0.0, ta
     else:
         final, correction = elevation, None
     return Solution(final, elevation, flight_time, correction, lower, upper)
+
+
+def adjust_fire(base_distance, along, lateral):
+    """Корректировка огня относительно линии орудие–цель.
+
+    along   — сдвиг по дальности, м (+ дальше: был недолёт; − ближе: был перелёт)
+    lateral — боковой сдвиг, м (+ правее, − левее)
+    Возвращает (новая дистанция, поправка направления в милах: + вправо, − влево).
+    """
+    forward = base_distance + along
+    distance = math.hypot(forward, lateral)
+    direction = math.atan2(lateral, forward) * MILS_PER_CIRCLE / (2 * math.pi)
+    return distance, direction
+
+
+def compare_charges(weapon_data, index, weapon, distance, mode, gun_height=0.0, target_height=0.0,
+                    apply_correction=False):
+    """Расчёт по всем зарядам орудия, которые дают решение: [(заряд, Solution), …]"""
+    result = []
+    for charge in allowed_charges(weapon_data, weapon):
+        try:
+            result.append((charge, solve(weapon_data, index, weapon, charge, distance, mode,
+                                         gun_height, target_height, apply_correction)))
+        except OutOfTableError:
+            pass
+    return result
 
 
 def validate_weapon_data(weapon_data):

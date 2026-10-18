@@ -13,6 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from ui_widgets import COLORS, wolf_shapes  # noqa: E402
+from version import APP_VERSION, REPOSITORY, WHATS_NEW  # noqa: E402
 from weapons_data import WEAPON_DATA  # noqa: E402
 
 TARGET = os.path.join(ROOT, "mobile", "data.js")
@@ -31,6 +32,7 @@ def render():
         f"  root.WEAPON_DATA = {dump(WEAPON_DATA)};\n"
         f"  root.THEME_COLORS = {dump(COLORS)};\n"
         f"  root.WOLF_SHAPES = {dump(wolf)};\n"
+        f"  root.APP_INFO = {dump({'version': APP_VERSION, 'repository': REPOSITORY, 'whatsNew': WHATS_NEW})};\n"
         "})(typeof globalThis !== \"undefined\" ? globalThis : this);\n"
     )
 

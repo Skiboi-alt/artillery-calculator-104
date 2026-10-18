@@ -113,6 +113,29 @@
     return { elevation: final, baseElevation: elevation, flightTime, correction, lowerRow: lower, upperRow: upper };
   }
 
+  const MILS_PER_CIRCLE = 6400; // Угломер НАТО, как в Arma 3
+
+  // Корректировка огня относительно линии орудие–цель.
+  // along — сдвиг по дальности (+ дальше: был недолёт), lateral — вбок (+ правее).
+  // Возвращает [новая дистанция, поправка направления в милах: + вправо, − влево].
+  function adjustFire(baseDistance, along, lateral) {
+    const forward = baseDistance + along;
+    return [Math.hypot(forward, lateral), Math.atan2(lateral, forward) * MILS_PER_CIRCLE / (2 * Math.PI)];
+  }
+
+  // Расчёт по всем зарядам орудия, которые дают решение: [[заряд, решение], …]
+  function compareCharges(data, weapon, distance, mode, gunHeight = 0, targetHeight = 0, applyCorrection = false) {
+    const result = [];
+    for (const charge of allowedCharges(data, weapon)) {
+      try {
+        result.push([charge, solve(data, weapon, charge, distance, mode, gunHeight, targetHeight, applyCorrection)]);
+      } catch (e) {
+        if (!(e instanceof OutOfTableError)) throw e;
+      }
+    }
+    return result;
+  }
+
   // Проверка целостности таблиц: список проблем (пустой — всё в порядке)
   function validateWeaponData(data) {
     const problems = [];
@@ -135,6 +158,7 @@
   const api = {
     OutOfTableError, g, chargeRows, allowedCharges, chargeRange, chargesForDistance,
     closestRows, tableLookup, interpolate, heightCorrection, solve, validateWeaponData,
+    MILS_PER_CIRCLE, adjustFire, compareCharges,
   };
   root.Ballistics = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -124,5 +124,37 @@ class ChargeHelpersTest(unittest.TestCase):
         self.assertEqual(b.closest_rows([], 100), (None, None))
 
 
+class AdjustFireTest(unittest.TestCase):
+    def test_range_only(self):
+        self.assertEqual(b.adjust_fire(1000, 50, 0), (1050, 0))
+        self.assertEqual(b.adjust_fire(1000, -100, 0), (900, 0))
+
+    def test_lateral(self):
+        distance, direction = b.adjust_fire(1000, 0, 100)
+        self.assertAlmostEqual(distance, 1004.987562, places=5)
+        self.assertAlmostEqual(direction, 101.52, places=2)   # atan(0.1) · 6400 / 2π ≈ 1 мил на 1 м на 1 км
+        self.assertAlmostEqual(b.adjust_fire(1000, 0, -100)[1], -101.52, places=2)
+
+    def test_quarter_circle(self):
+        # Сдвиг строго вбок на ту же дистанцию — 45°, то есть 800 мил
+        self.assertAlmostEqual(b.adjust_fire(500, 0, 500)[1], 800)
+
+
+class CompareChargesTest(unittest.TestCase):
+    def test_all_suitable(self):
+        result = b.compare_charges(WEAPON_DATA, INDEX, MORTAR, 400, "table")
+        self.assertEqual([c for c, _ in result], [0, 1, 2])
+        self.assertEqual([s.elevation for _, s in result], [1127, 1497, 1550])
+
+    def test_table_mode_skips_missing_rows(self):
+        # 525 м нет ни в одной таблице миномёта — в табличном режиме решений нет
+        self.assertEqual(b.compare_charges(WEAPON_DATA, INDEX, MORTAR, 525, "table"), [])
+        self.assertEqual(len(b.compare_charges(WEAPON_DATA, INDEX, MORTAR, 525, "nontable")), 2)
+
+    def test_matches_single_solve(self):
+        for charge, s in b.compare_charges(WEAPON_DATA, INDEX, SLEDGE, 15000, "table", 10, 60, True):
+            self.assertEqual(s, solve(SLEDGE, charge, 15000, "table", 10, 60, True))
+
+
 if __name__ == "__main__":
     unittest.main()

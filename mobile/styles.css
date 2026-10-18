@@ -40,7 +40,9 @@ button { cursor: pointer; }
 }
 
 /* ---------- Шапка ---------- */
-.topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.topbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.topbar .icon-btn { width: 40px; height: 40px; }
+.topbar .icon-btn + .icon-btn { margin-left: -4px; }
 .logo {
   flex: none; width: 46px; height: 46px; border-radius: 12px;
   background: var(--surface_2); border: 1px solid var(--border_strong);
@@ -48,7 +50,7 @@ button { cursor: pointer; }
 }
 .logo svg { width: 34px; height: 34px; }
 .titles { flex: 1; min-width: 0; }
-.titles h1 { margin: 0; font-size: clamp(14px, 4.1vw, 18px); font-weight: 600; line-height: 1.2; white-space: nowrap; }
+.titles h1 { margin: 0; font-size: clamp(13px, 3.65vw, 18px); letter-spacing: -.01em; font-weight: 600; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .titles p { margin: 2px 0 0; font-size: 11px; color: var(--text_muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .titles b { color: var(--text); font-weight: 600; letter-spacing: .02em; }
 
@@ -122,6 +124,50 @@ button { cursor: pointer; }
 .stat-value { font: 600 18px/1.1 var(--font-num); font-variant-numeric: tabular-nums; color: var(--text_faint); }
 .stat-value.on { color: var(--text); }
 
+/* Плитка времени — кнопка таймера */
+.stat.timer {
+  background: none; border: 1px solid transparent; border-radius: 10px;
+  padding: 4px 6px; margin: -4px -6px; text-align: right; display: block;
+  transition: border-color .2s, background-color .2s;
+}
+.stat.timer .caption, .stat.timer .stat-value, .stat.timer .stat-note { display: block; }
+.stat.timer.running { border-color: var(--accent); background: var(--surface_2); }
+.stat.timer.warn .stat-value, .stat.timer.warn .stat-note { color: var(--accent); }
+.stat-note { font-size: 10px; color: var(--text_faint); margin-top: 1px; }
+.stat.timer.flash { animation: flash .7s var(--ease-out); }
+
+/* Сравнение зарядов */
+.compare { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.compare:empty { display: none; }
+.chip {
+  border: 1px solid var(--border); background: var(--surface_2); color: var(--text_muted);
+  border-radius: 8px; padding: 5px 9px; font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.chip.active { background: var(--surface_3); border-color: var(--accent); color: var(--text); }
+.chip b { font-weight: 600; margin-right: 4px; }
+.chip em { font-style: normal; color: var(--text); margin-left: 4px; }
+
+/* Корректировка огня */
+.adjust-status { font-size: 12px; color: var(--text_muted); text-align: right; }
+.adjust-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.adjust-grid .btn { height: 46px; font-size: 15px; width: 100%; }
+.adjust-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.adjust-row .caption { margin: 0; }
+.input-wrap.step { width: 92px; flex: none; }
+.input-wrap.step input { height: 40px; font-size: 16px; padding: 0 0 0 12px; }
+.input-wrap.step .suffix { padding-right: 10px; }
+.adjust-direction { flex: 1; min-width: 0; font-size: 12px; color: var(--text_faint); }
+.adjust-direction.on { color: var(--text); font-weight: 600; }
+
+/* Справка */
+.help-section { margin-top: 14px; }
+.help-section .caption { margin-bottom: 3px; }
+.help-section p { margin: 0; color: var(--text); font-size: 14px; }
+.sheet ul.news { margin: 6px 0 0; padding-left: 18px; color: var(--text); font-size: 14px; }
+.sheet ul.news li { margin-bottom: 6px; }
+.sheet .links { display: flex; gap: 16px; margin-top: 14px; }
+.sheet .links a { color: var(--accent); font-weight: 600; font-size: 14px; text-decoration: none; }
+
 .res-message { margin: 10px 0 0; font-size: 13px; color: var(--text_muted); }
 .res-message.error { color: var(--error); }
 .res-detail { margin: 3px 0 0; font-size: 12px; color: var(--text_faint); min-height: 0; }
@@ -129,6 +175,7 @@ button { cursor: pointer; }
 
 /* Пока открыта клавиатура, карточка результата компактнее */
 body:has(input:focus) .res-detail,
+body:has(input:focus) .compare,
 body:has(input:focus) .res-message { display: none; }
 body:has(input:focus) #resValue { font-size: 36px; }
 

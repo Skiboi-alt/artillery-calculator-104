@@ -46,8 +46,8 @@
   const state = {
     weapon: DATA[settings.weapon] ? settings.weapon : "Миномёт",
     charge: String(settings.charge ?? "0"),
-    mode: settings.calculation_mode === "nontable" ? "nontable" : "table",
-    correction: Boolean(settings.apply_height_correction),
+    // Заряд подбирается сам (самый быстрый), пока его не выбрали вручную
+    chargeManual: Boolean(settings.charge_manual),
     history: Array.isArray(settings.history) ? settings.history.filter((h) => h && typeof h.elevation === "number") : [],
     shownElevation: null,
     resultText: "",
@@ -61,8 +61,7 @@
     writeStore(KEYS.settings, {
       weapon: state.weapon,
       charge: state.charge,
-      calculation_mode: state.mode,
-      apply_height_correction: state.correction,
+      charge_manual: state.chargeManual,
       inputs: Object.fromEntries(Object.entries(fields).map(([k, el]) => [k, el.value])),
       history: state.history.slice(0, MAX_HISTORY),
       adjust_step: state.adjustStep,
@@ -142,35 +141,21 @@
   }
 
   const weaponSeg = createSegmented($("weaponSeg"), () => state.weapon, (v) => { state.weapon = v; onWeaponChange(); });
-  const chargeSeg = createSegmented($("chargeSeg"), () => state.charge, (v) => { state.charge = String(v); chargeSeg.update(); updateChargeHint(); persistSettings(); });
-  const modeSeg = createSegmented($("modeSeg"), () => state.mode, (v) => { state.mode = v; modeSeg.update(); persistSettings(); });
+  const chargeSeg = createSegmented($("chargeSeg"), () => state.charge, (v) => { state.charge = String(v); state.chargeManual = true; chargeSeg.update(); updateChargeHint(); persistSettings(); });
 
   weaponSeg.setOptions(Object.keys(DATA).map((name) => [name, F.displayName(name)]));
-  modeSeg.setOptions([["table", "По таблице"], ["nontable", "Интерполяция"]]);
 
   function onWeaponChange() {
     weaponSeg.update();
     const charges = B.allowedCharges(DATA, state.weapon).map(String);
     if (!charges.includes(state.charge)) state.charge = charges[0] || "";
+    state.chargeManual = false; // Другое орудие — заряд снова подбирается сам
     chargeSeg.setOptions(charges.map((c) => [c, c]));
     updateChargeHint();
     persistSettings();
   }
 
   // ---------------------------------------------------------------- поправка и подсказки
-
-  const correctionBox = $("correction");
-  correctionBox.checked = state.correction;
-  correctionBox.addEventListener("change", () => {
-    state.correction = correctionBox.checked;
-    updateHeightsDim();
-    persistSettings();
-  });
-
-  function updateHeightsDim() {
-    // Высоты нужны только при включённой поправке — иначе поля приглушены
-    $("heights").classList.toggle("dimmed", !state.correction);
-  }
 
   function parseNumber(text) {
     const value = Number(String(text).trim().replace(",", "."));
@@ -190,16 +175,36 @@
       suggestion.textContent = "";
       return;
     }
+    if (!state.chargeManual) autoSelectCharge(distance, ...enteredHeights());
     const suitable = B.chargesForDistance(DATA, state.weapon, distance).map(String);
     chargeSeg.setSuggested(suitable);
     if (!suitable.length) {
       suggestion.textContent = "ни один заряд не достаёт";
       suggestion.className = "bad";
-    } else if (suitable.includes(state.charge)) {
-      suggestion.textContent = "заряд подходит";
+    } else if (!suitable.includes(state.charge)) {
+      suggestion.textContent = `не достаёт · подходят: ${suitable.join(", ")}`;
+      suggestion.className = "bad";
+    } else if (state.chargeManual) {
+      suggestion.textContent = "выбран вручную";
+    } else if (state.charge !== String(B.fastestCharge(DATA, state.weapon, distance))) {
+      suggestion.textContent = "авто: цель выше на 300+ м";
     } else {
-      suggestion.textContent = `подходят: ${suitable.join(", ")}`;
-      suggestion.className = "good";
+      suggestion.textContent = "авто: самый быстрый";
+    }
+  }
+
+  // [высота орудия, высота цели], если обе введены числами, иначе [null, null]
+  function enteredHeights() {
+    const gun = parseNumber(fields.user_height.value), target = parseNumber(fields.target_height.value);
+    return gun === null || target === null ? [null, null] : [gun, target];
+  }
+
+  // Правила методички: самый быстрый заряд, а при цели выше на 300+ м — заряд 2
+  function autoSelectCharge(distance, gun = null, target = null) {
+    const best = F.recommendedCharge(DATA, state.weapon, distance, gun, target);
+    if (best !== null && String(best) !== state.charge) {
+      state.charge = String(best);
+      chargeSeg.update();
     }
   }
 
@@ -262,6 +267,7 @@
     $("resTime").className = $("resCorr").className = "stat-value";
     $("resDetail").textContent = "";
     $("timerNote").textContent = "";
+    $("resGame").hidden = true;
     $("corrNote").textContent = "";
     renderComparison([], null);
     renderAdvice([]);
@@ -307,7 +313,7 @@
   function showResult(solution, charge, distance, animate, comparison = [], advice = []) {
     stopTimer();
     state.lastSolution = solution;
-    setPill(state.mode === "table" ? "Таблица" : "Интерполяция", "ok");
+    setPill(solution.lowerRow === solution.upperRow ? "Таблица" : "Интерполяция", "ok");
     const target = solution.elevation;
     resValue.className = "ok";
     if (animate) {
@@ -324,6 +330,9 @@
     $("resMessage").className = "res-message";
     renderComparison(comparison, charge);
     renderAdvice(advice);
+    // «Что выставить в игре» — в порядке действий по методичке (тестовая функция)
+    $("resGame").textContent = `В игре: ELV ${solution.elevation.toFixed(1)} · заряд ${charge} (F) · прилёт ${solution.flightTime.toFixed(0)} с`;
+    $("resGame").hidden = false;
     const { lowerRow: lo, upperRow: up } = solution;
     $("resDetail").textContent = lo === up
       ? `Строка таблицы: ${lo.range} м → ${lo.elev} MIL`
@@ -361,7 +370,7 @@
       const text = fields[name].value.trim();
       if (!text) {
         if (required) throw new InputError(`Заполните поле «${title}»`, name);
-        return 0;
+        return null;
       }
       const value = parseNumber(text);
       if (value === null) throw new InputError(`${title}: введите число`, name);
@@ -372,13 +381,16 @@
     const charge = Number(state.charge);
     if (!charges.includes(charge)) throw new InputError("Выберите заряд");
 
-    // Высоты обязательны только при включённой поправке
+    // Высоты необязательны: обе — поправка на превышение, ни одной — без поправки
     const distance = number("distance", "Дистанция до цели", true);
-    const gun = number("user_height", "Высота орудия", state.correction);
-    const target = number("target_height", "Высота цели", state.correction);
+    const gun = number("user_height", "Высота орудия", false);
+    const target = number("target_height", "Высота цели", false);
     if (distance <= 0) throw new InputError("Дистанция должна быть больше 0", "distance");
-    if (gun < 0) throw new InputError("Высота орудия не может быть отрицательной", "user_height");
-    if (target < 0) throw new InputError("Высота цели не может быть отрицательной", "target_height");
+    if ((gun === null) !== (target === null)) {
+      throw new InputError("Введите обе высоты или оставьте обе пустыми", gun === null ? "user_height" : "target_height");
+    }
+    if (gun !== null && gun < 0) throw new InputError("Высота орудия не может быть отрицательной", "user_height");
+    if (target !== null && target < 0) throw new InputError("Высота цели не может быть отрицательной", "target_height");
     return { distance, charge, gun, target };
   }
 
@@ -404,10 +416,14 @@
       return;
     }
 
+    if (!state.chargeManual) {
+      autoSelectCharge(input.distance, input.gun, input.target);
+      input.charge = Number(state.charge);
+      updateChargeHint();
+    }
     let solution;
     try {
-      solution = B.solve(DATA, state.weapon, input.charge, input.distance, state.mode,
-                         input.gun, input.target, state.correction);
+      solution = B.solve(DATA, state.weapon, input.charge, input.distance, input.gun, input.target);
     } catch (e) {
       if (!(e instanceof B.OutOfTableError)) throw e;
       showError(e.title, e.details);
@@ -415,12 +431,8 @@
       return;
     }
 
-    const comparison = B.compareCharges(DATA, state.weapon, input.distance, state.mode,
-                                        input.gun, input.target, state.correction);
-    // Подсказки знают высоты, только если оба поля заполнены
-    const heightsEntered = fields.user_height.value.trim() !== "" && fields.target_height.value.trim() !== "";
-    const advice = F.advisories(state.weapon, input.charge, input.distance,
-                                heightsEntered ? input.gun : null, heightsEntered ? input.target : null, state.correction);
+    const comparison = B.compareCharges(DATA, state.weapon, input.distance, input.gun, input.target);
+    const advice = F.advisories(state.weapon, input.charge, input.distance, input.gun, input.target);
     showResult(solution, input.charge, input.distance, !silent, comparison, advice);
     addHistory(solution, input.charge, input.distance);
     persistSettings();
@@ -439,8 +451,6 @@
       user_height: fields.user_height.value,
       target_height: fields.target_height.value,
       weapon: state.weapon,
-      calculation_mode: state.mode,
-      apply_height_correction: state.correction,
     };
   }
 
@@ -498,15 +508,11 @@
     const charge = String(data.charge ?? "").trim();
     state.charge = charges.includes(charge) ? charge : charges[0];
     onWeaponChange();
+    state.chargeManual = charges.includes(charge); // Сохранённый расчёт повторяется с тем же зарядом
     for (const name of Object.keys(fields)) {
       fields[name].value = String(data[name] ?? "");
       fields[name].closest(".field").classList.remove("error");
     }
-    state.mode = data.calculation_mode === "nontable" ? "nontable" : "table";
-    modeSeg.update();
-    state.correction = Boolean(data.apply_height_correction);
-    correctionBox.checked = state.correction;
-    updateHeightsDim();
     updateChargeHint();
   }
 
@@ -723,6 +729,7 @@
       chip.innerHTML = `<b>з${charge}</b>${s.elevation.toFixed(1)} · ${s.flightTime.toFixed(0)} с${charge === fastest ? "<em>быстрее</em>" : ""}`;
       chip.addEventListener("click", () => {
         state.charge = String(charge);
+        state.chargeManual = true;
         chargeSeg.update();
         updateChargeHint();
         calculate();
@@ -783,12 +790,6 @@
 
     const distance = Math.round(B.adjustFire(state.adjust.base, state.adjust.along, state.adjust.lateral)[0] * 10) / 10;
     fields.distance.value = B.g(distance);
-    // Дистанция после корректировки почти никогда не совпадает со строкой таблицы
-    if (state.mode === "table" && !B.tableLookup(B.chargeRows(DATA, state.weapon, state.charge), distance)) {
-      state.mode = "nontable";
-      modeSeg.update();
-      toast("Режим переключён на интерполяцию");
-    }
     updateAdjustStatus();
     updateChargeHint();
     calculate();
@@ -886,10 +887,9 @@
   // ---------------------------------------------------------------- справка и «Что нового»
 
   const HELP = [
-    ["Порядок расчёта", "Выберите орудие и заряд, введите дистанцию и нажмите «Рассчитать». Заряды, которые не достают до цели, приглушены. Методичка советует брать меньший заряд — снаряд летит быстрее; в строке зарядов самый быстрый помечен."],
-    ["Режимы", "«По таблице» — только дальности из таблицы (шаг 50 или 100 м). «Интерполяция» — любая дальность внутри диапазона заряда: значение берётся между двумя соседними строками."],
-    ["Поправка на превышение", "Учитывает разницу высот орудия и цели (высоты — с карты, над уровнем моря). Цель выше — возвышение уменьшается, ниже — увеличивается. Время полёта тоже поправляется по 4-му столбцу таблицы: цель выше — прилёт раньше, ниже — позже. Методичка: поправка желательна от 50 м разницы, обязательна от 100 м — программа подскажет, если она выключена."],
-    ["Подсказки под результатом", "Напоминания из методички: перепад высот без поправки; цель выше на 300 м и больше — для Молота нужен заряд 2; разброс до 20 м — проверьте, что союзников нет рядом с целью."],
+    ["Порядок расчёта", "Выберите орудие, введите дистанцию и нажмите «Рассчитать». Заряд подбирается сам — самый быстрый из подходящих, как советует методичка; другой можно выбрать вручную или нажатием в строке зарядов. Значение всегда по таблице: на табличной дальности — строка таблицы, между строками — интерполяция."],
+    ["Поправка на превышение", "Включается сама, когда заполнены обе высоты — орудия и цели (с карты, над уровнем моря). Цель выше — возвышение уменьшается, ниже — увеличивается. Время полёта тоже поправляется по 4-му столбцу таблицы: цель выше — прилёт раньше. Пустые поля — расчёт без поправки."],
+    ["Подсказки под результатом", "Напоминания из методички: высоты не введены; цель выше на 300 м и больше — для Молота нужен заряд 2; разброс до 20 м — проверьте, что союзников нет рядом с целью."],
     ["Корректировка огня", "После выстрела по докладу наблюдателя: «Недолёт» — дальше на шаг, «Перелёт» — ближе, «Левее»/«Правее» — сместить разрыв вбок. Сдвиги — относительно линии орудие–цель; дистанция пересчитывается, поправку направления (в милах, 6400 в круге) внесите в азимут. «Сброс» возвращает исходную дистанцию."],
     ["Таймер полёта", "Нажмите на «Время полёта» — обратный отсчёт до разрыва. Короткий сигнал за 5 секунд, длинный — в момент разрыва (и вибрация на Android). Повторное нажатие — стоп."],
     ["Сохранения", "Значок папки — список сохранений, импорт и экспорт saves.json: формат общий с программой для ПК."],
@@ -900,7 +900,7 @@
       `<div class="help-section"><span class="caption">${escapeHtml(title)}</span><p>${escapeHtml(text)}</p></div>`).join("");
     openSheet(`
       <h2>Справка</h2>
-      <p>Артиллерийский калькулятор 104-го ДОБ · версия ${escapeHtml(window.APP_INFO.version)}</p>
+      <p>Артиллерийский калькулятор 104-го ДОБ · версия ${escapeHtml(window.APP_INFO.version)} · сделано SmaleUp</p>
       ${sections}
       <div class="links"><a href="https://github.com/${escapeHtml(window.APP_INFO.repository)}" target="_blank" rel="noopener">Проект на GitHub</a></div>
       <div class="buttons">
@@ -970,6 +970,7 @@
     input.addEventListener("input", () => {
       input.closest(".field").classList.remove("error");
       if (name === "distance") {
+        state.chargeManual = false; // Новая дистанция — заряд снова подбирается сам
         // Дистанцию изменили вручную — прежняя корректировка к ней больше не относится
         if (state.adjust) { state.adjust = null; updateAdjustStatus(); }
         updateChargeHint();
@@ -988,8 +989,6 @@
   if (problems.length) console.warn("Таблицы:", problems);
 
   onWeaponChange();
-  modeSeg.update(true);
-  updateHeightsDim();
   updateSavesBadge();
   renderHistory();
   showEmpty();

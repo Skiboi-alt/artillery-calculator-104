@@ -506,54 +506,6 @@ class SegmentedControl(FocusableCanvas):
             self.create_text(pad + i * seg_w + seg_w / 2, h / 2, text=label, font=font, fill=color)
 
 
-class ToggleSwitch(FocusableCanvas):
-    """Тумблер вкл/выкл для BooleanVar (пробел — переключить)"""
-
-    def __init__(self, parent, theme, variable, parent_bg):
-        super().__init__(parent, bg=parent_bg, highlightthickness=0, bd=0,
-                         width=theme.px(48), height=theme.px(28), cursor="hand2")
-        self.theme = theme
-        self.variable = variable
-        # 0 — выключен, 1 — включён; дробное значение во время анимации
-        self.progress = 1.0 if variable.get() else 0.0
-        self.tween = Tween(self, self._set_progress, duration_ms=220)
-        self.bind("<Button-1>", self._on_click)
-        self.bind("<KeyPress-space>", lambda e: self.toggle())
-        variable.trace_add("write", lambda *args: self.tween.start(
-            self.progress, 1.0 if self.variable.get() else 0.0))
-        self._redraw()
-
-    def _on_click(self, event):
-        self.toggle()
-
-    def toggle(self):
-        self.variable.set(not self.variable.get())
-        return "break"
-
-    def _set_progress(self, progress):
-        self.progress = progress
-        self._redraw()
-
-    def _redraw(self):
-        self.delete("all")
-        px = self.theme.px
-        m = px(2)                      # Поле под рамку фокуса
-        w, h = px(48) - 2 * m, px(28) - 2 * m
-        t = self.progress
-        if self.has_focus:
-            round_rect(self, 0, 0, px(48) - 1, px(28) - 1, px(14), fill="", outline=COLORS["accent"], width=2)
-        # Капсула: два круга по краям + прямоугольник между ними; цвет плавно перетекает
-        track = blend_color(COLORS["surface_3"], COLORS["accent"], t)
-        d = h - 2
-        self.create_oval(m + 1, m + 1, m + 1 + d, m + 1 + d, fill=track, outline=track)
-        self.create_oval(m + w - 1 - d, m + 1, m + w - 1, m + 1 + d, fill=track, outline=track)
-        self.create_rectangle(m + 1 + d / 2, m + 1, m + w - 1 - d / 2, m + 1 + d, fill=track, outline=track)
-        knob = h - px(8)
-        x = m + px(4) + (w - px(8) - knob) * t
-        self.create_oval(x, m + px(4), x + knob, m + px(4) + knob,
-                         fill=blend_color(COLORS["text_muted"], COLORS["accent_text"], t), outline="")
-
-
 class InputField(tk.Frame):
     """Подпись + поле ввода со скруглённой рамкой, подсказкой и единицей измерения"""
 
@@ -566,7 +518,6 @@ class InputField(tk.Frame):
         self.focused = False
         self.invalid = False
         self.error_mark = False    # Подсветка после неудачного расчёта (до следующего ввода)
-        self.dimmed = False
         self._placeholder_shown = False
 
         # Без подписи (label="") — компактное поле, например «шаг корректировки»
@@ -609,32 +560,19 @@ class InputField(tk.Frame):
 
     # --- подсказка в пустом поле ---
 
-    def _text_color(self):
-        return COLORS["text_muted"] if self.dimmed else COLORS["text"]
-
     def _show_placeholder(self):
         if self.placeholder and not self.entry.get():
             self.entry.insert(0, self.placeholder)
-            self.entry.config(fg=COLORS["text_ghost"] if self.dimmed else COLORS["text_faint"])
+            self.entry.config(fg=COLORS["text_faint"])
             self._placeholder_shown = True
 
     def _hide_placeholder(self):
         if self._placeholder_shown:
             self.entry.delete(0, tk.END)
-            self.entry.config(fg=self._text_color())
+            self.entry.config(fg=COLORS["text"])
             self._placeholder_shown = False
 
     # --- состояние ---
-
-    def set_dimmed(self, dimmed):
-        """Приглушить поле (оно не участвует в расчёте), но оставить доступным для ввода"""
-        self.dimmed = dimmed
-        self.label.config(fg=COLORS["text_faint"] if dimmed else COLORS["text_muted"])
-        if self._placeholder_shown:
-            self.entry.config(fg=COLORS["text_ghost"] if dimmed else COLORS["text_faint"])
-        else:
-            self.entry.config(fg=self._text_color())
-        self._redraw()
 
     def mark_error(self):
         """Подсветить поле красным и поставить в него курсор"""
@@ -682,7 +620,7 @@ class InputField(tk.Frame):
                    outline=outline, width=2 if (self.focused or highlighted) else 1, tags="frame")
         if self.suffix:
             self.box.create_text(w - px(14), h / 2, text=self.suffix, anchor="e", font=self.theme.body,
-                                 fill=COLORS["text_ghost"] if self.dimmed else COLORS["text_faint"], tags="frame")
+                                 fill=COLORS["text_faint"], tags="frame")
         self.box.tag_lower("frame")
         suffix_space = px(36) if self.suffix else px(14)
         self.box.coords(self._window, px(14), h / 2)

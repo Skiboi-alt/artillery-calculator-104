@@ -5,12 +5,11 @@
 константы через mobile/data.js.
 """
 
+import ballistics
+
 # Названия орудий как в подразделении (ключи таблиц и сохранений не меняются)
 DISPLAY_NAMES = {"Миномёт": "Молот", "Кувалда": "Кувалда"}
 
-# Поправка на превышение: «рекомендуется от 50 м, обязательно от 100 м»
-HEIGHT_RECOMMENDED_M = 50
-HEIGHT_REQUIRED_M = 100
 # «При стрельбе на гору высотой 300+ метров лучше выбирать Charge 2»
 HIGH_TARGET_M = 300
 HIGH_TARGET_WEAPON = "Миномёт"
@@ -24,19 +23,16 @@ def display_name(weapon):
     return DISPLAY_NAMES.get(weapon, weapon)
 
 
-def advisories(weapon, charge, distance, gun_height, target_height, correction_on):
+def advisories(weapon, charge, distance, gun_height, target_height):
     """Подсказки к результату: [(уровень, текст), …], уровень — "warn" или "info".
 
-    gun_height / target_height — None, если высота не введена.
+    gun_height / target_height — None, если высота не введена (тогда поправки на превышение нет).
     """
     result = []
-    heights_known = gun_height is not None and target_height is not None
-    if heights_known:
+    if gun_height is None or target_height is None:
+        result.append(("info", "Высоты не введены — поправка на превышение не учтена"))
+    else:
         diff = target_height - gun_height
-        if not correction_on and abs(diff) >= HEIGHT_RECOMMENDED_M:
-            level = "warn" if abs(diff) >= HEIGHT_REQUIRED_M else "info"
-            need = "обязательна" if abs(diff) >= HEIGHT_REQUIRED_M else "рекомендуется"
-            result.append((level, f"Перепад высот {abs(diff):g} м — поправка на превышение {need}"))
         if weapon == HIGH_TARGET_WEAPON and diff >= HIGH_TARGET_M and charge < HIGH_TARGET_CHARGE:
             result.append(("warn", f"Цель выше на {diff:g} м — берите заряд {HIGH_TARGET_CHARGE}: "
                                    f"дуги заряда {charge} может не хватить"))
@@ -45,3 +41,13 @@ def advisories(weapon, charge, distance, gun_height, target_height, correction_o
                    f"Разброс до {DISPERSION_M} м{' (дальняя дистанция)' if far else ''} — "
                    f"проверьте, что союзников нет в радиусе {DISPERSION_M} м"))
     return result
+
+
+def recommended_charge(weapon_data, weapon, distance, gun_height=None, target_height=None):
+    """Заряд для автоподбора: самый быстрый из подходящих, но при цели выше на 300+ м
+    для Молота — заряд 2 (дуги меньших зарядов может не хватить). None — ни один не достаёт."""
+    if gun_height is not None and target_height is not None and weapon == HIGH_TARGET_WEAPON \
+            and target_height - gun_height >= HIGH_TARGET_M \
+            and HIGH_TARGET_CHARGE in ballistics.charges_for_distance(weapon_data, weapon, distance):
+        return HIGH_TARGET_CHARGE
+    return ballistics.fastest_charge(weapon_data, weapon, distance)

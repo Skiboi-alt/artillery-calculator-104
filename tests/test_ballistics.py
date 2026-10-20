@@ -9,12 +9,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ballistics as b  # noqa: E402
 from weapons_data import WEAPON_DATA  # noqa: E402
 
-INDEX = b.build_index(WEAPON_DATA)
 MORTAR, SLEDGE = "Миномёт", "Кувалда"
 
 
-def solve(weapon, charge, distance, mode, gun=0.0, target=0.0, correction=False):
-    return b.solve(WEAPON_DATA, INDEX, weapon, charge, distance, mode, gun, target, correction)
+def solve(weapon, charge, distance, gun=None, target=None):
+    return b.solve(WEAPON_DATA, weapon, charge, distance, gun, target)
 
 
 class DataIntegrityTest(unittest.TestCase):
@@ -35,27 +34,29 @@ class DataIntegrityTest(unittest.TestCase):
         self.assertEqual(len(problems), 4)  # 2 строки без полей, порядок дальностей, пустая таблица
 
 
-class TableModeTest(unittest.TestCase):
+class TableRowsTest(unittest.TestCase):
+    """На дальности из таблицы результат — ровно табличная строка"""
+
     def test_exact_row(self):
-        s = solve(MORTAR, 1, 500, "table")
+        s = solve(MORTAR, 1, 500)
         self.assertEqual((s.elevation, s.flight_time, s.correction), (1471, 28.3, None))
 
     def test_float_distance_matches_int_key(self):
-        self.assertEqual(solve(MORTAR, 1, 500.0, "table").elevation, 1471)
+        self.assertEqual(solve(MORTAR, 1, 500.0).elevation, 1471)
 
     def test_sledgehammer(self):
-        s = solve(SLEDGE, 3, 15000, "table")
+        s = solve(SLEDGE, 3, 15000)
         self.assertEqual((s.elevation, s.flight_time), (1418, 130.0))
 
-    def test_missing_row(self):
+    def test_out_of_range_title(self):
         with self.assertRaises(b.OutOfTableError) as ctx:
-            solve(MORTAR, 1, 525, "table")
-        self.assertEqual(ctx.exception.title, "Нет табличного значения")
+            solve(MORTAR, 1, 5000)
+        self.assertEqual(ctx.exception.title, "Вне диапазона")
 
 
 class InterpolationTest(unittest.TestCase):
     def test_midpoint(self):
-        s = solve(MORTAR, 1, 525, "nontable")
+        s = solve(MORTAR, 1, 525)
         self.assertAlmostEqual(s.elevation, 1464.5)          # между 1471 и 1458
         self.assertAlmostEqual(s.flight_time, 28.3)
         self.assertEqual((s.lower_row["range"], s.upper_row["range"]), (500, 550))
@@ -66,30 +67,30 @@ class InterpolationTest(unittest.TestCase):
         self.assertAlmostEqual(delev, (61.0 + 91.0) / 2)
         self.assertAlmostEqual(time_, (12.8 + 12.1) / 2)
 
-    def test_exact_distance_in_interpolation_mode(self):
-        s = solve(MORTAR, 1, 500, "nontable")
+    def test_exact_distance_gives_one_row(self):
+        s = solve(MORTAR, 1, 500)
         self.assertEqual(s.elevation, 1471)
         self.assertIs(s.lower_row, s.upper_row)
 
     def test_table_edges(self):
-        self.assertEqual(solve(MORTAR, 1, 150, "nontable").elevation, 1562)
-        self.assertEqual(solve(MORTAR, 1, 1950, "nontable").elevation, 913)
+        self.assertEqual(solve(MORTAR, 1, 150).elevation, 1562)
+        self.assertEqual(solve(MORTAR, 1, 1950).elevation, 913)
 
     def test_out_of_range(self):
         for distance in (149.9, 1950.1, 5000):
             with self.assertRaises(b.OutOfTableError):
-                solve(MORTAR, 1, distance, "nontable")
+                solve(MORTAR, 1, distance)
 
 
 class HeightCorrectionTest(unittest.TestCase):
     def test_target_higher_decreases_elevation(self):
-        s = solve(MORTAR, 1, 500, "table", gun=0, target=100, correction=True)
+        s = solve(MORTAR, 1, 500, gun=0, target=100)
         self.assertAlmostEqual(s.elevation, 1471 - 3.2)
         self.assertAlmostEqual(s.correction, -3.2)
         self.assertEqual(s.base_elevation, 1471)
 
     def test_target_lower_increases_elevation(self):
-        s = solve(MORTAR, 1, 525, "nontable", gun=120, target=80, correction=True)
+        s = solve(MORTAR, 1, 525, gun=120, target=80)
         self.assertAlmostEqual(s.correction, 0.4 * (3.2 + 3.5) / 2)
         self.assertAlmostEqual(s.elevation, 1464.5 + 1.34)
 
@@ -99,30 +100,30 @@ class HeightCorrectionTest(unittest.TestCase):
     def test_no_delev(self):
         self.assertEqual(b.height_correction(1000, None, 0, 10), (1000, 0.0))
 
-    def test_correction_disabled_ignores_heights(self):
-        s = solve(MORTAR, 1, 500, "table", gun=0, target=500, correction=False)
+    def test_no_heights_no_correction(self):
+        s = solve(MORTAR, 1, 500)
         self.assertEqual((s.elevation, s.correction), (1471, None))
 
 
 class FlightTimeCorrectionTest(unittest.TestCase):
     def test_target_higher_shorter_flight(self):
         # Миномёт, з1, 500 м: time 28.3 с, time_per_100 0.7 с; цель выше на 200 м → −1.4 с
-        s = solve(MORTAR, 1, 500, "table", gun=0, target=200, correction=True)
+        s = solve(MORTAR, 1, 500, gun=0, target=200)
         self.assertAlmostEqual(s.flight_time, 28.3 - 1.4)
         self.assertAlmostEqual(s.time_correction, -1.4)
         self.assertEqual(s.base_flight_time, 28.3)
 
     def test_target_lower_longer_flight(self):
-        s = solve(MORTAR, 1, 500, "table", gun=150, target=50, correction=True)
+        s = solve(MORTAR, 1, 500, gun=150, target=50)
         self.assertAlmostEqual(s.flight_time, 28.3 + 0.7)
 
     def test_interpolated_time_per_100(self):
         # Кувалда, з2: 14600 → 0.5, 14700 → 0.7; на 14650 м — 0.6 с на 100 м
-        s = solve(SLEDGE, 2, 14650, "nontable", gun=0, target=100, correction=True)
+        s = solve(SLEDGE, 2, 14650, gun=0, target=100)
         self.assertAlmostEqual(s.time_correction, -0.6)
 
-    def test_no_correction_keeps_table_time(self):
-        s = solve(MORTAR, 1, 500, "table", gun=0, target=200, correction=False)
+    def test_no_heights_keeps_table_time(self):
+        s = solve(MORTAR, 1, 500)
         self.assertEqual((s.flight_time, s.base_flight_time, s.time_correction), (28.3, 28.3, None))
 
     def test_helper(self):
@@ -168,18 +169,33 @@ class AdjustFireTest(unittest.TestCase):
 
 class CompareChargesTest(unittest.TestCase):
     def test_all_suitable(self):
-        result = b.compare_charges(WEAPON_DATA, INDEX, MORTAR, 400, "table")
+        result = b.compare_charges(WEAPON_DATA, MORTAR, 400)
         self.assertEqual([c for c, _ in result], [0, 1, 2])
         self.assertEqual([s.elevation for _, s in result], [1127, 1497, 1550])
 
-    def test_table_mode_skips_missing_rows(self):
-        # 525 м нет ни в одной таблице миномёта — в табличном режиме решений нет
-        self.assertEqual(b.compare_charges(WEAPON_DATA, INDEX, MORTAR, 525, "table"), [])
-        self.assertEqual(len(b.compare_charges(WEAPON_DATA, INDEX, MORTAR, 525, "nontable")), 2)
+    def test_between_rows(self):
+        # 525 м нет в таблицах, но заряды 1 и 2 до неё достают
+        self.assertEqual([c for c, _ in b.compare_charges(WEAPON_DATA, MORTAR, 525)], [1, 2])
+        self.assertEqual(b.compare_charges(WEAPON_DATA, MORTAR, 10000), [])
 
     def test_matches_single_solve(self):
-        for charge, s in b.compare_charges(WEAPON_DATA, INDEX, SLEDGE, 15000, "table", 10, 60, True):
-            self.assertEqual(s, solve(SLEDGE, charge, 15000, "table", 10, 60, True))
+        for charge, s in b.compare_charges(WEAPON_DATA, SLEDGE, 15000, 10, 60):
+            self.assertEqual(s, solve(SLEDGE, charge, 15000, gun=10, target=60))
+
+
+class FastestChargeTest(unittest.TestCase):
+    """Правило методички: меньший заряд — снаряд летит быстрее"""
+
+    def test_mortar(self):
+        self.assertEqual(b.fastest_charge(WEAPON_DATA, MORTAR, 400), 0)    # 13 с против 28 и 41
+        self.assertEqual(b.fastest_charge(WEAPON_DATA, MORTAR, 1000), 1)
+        self.assertEqual(b.fastest_charge(WEAPON_DATA, MORTAR, 3000), 2)
+
+    def test_sledgehammer(self):
+        self.assertEqual(b.fastest_charge(WEAPON_DATA, SLEDGE, 15000), 2)   # 62 с против 130
+
+    def test_out_of_range(self):
+        self.assertIsNone(b.fastest_charge(WEAPON_DATA, MORTAR, 10000))
 
 
 if __name__ == "__main__":

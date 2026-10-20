@@ -2,13 +2,14 @@
 
 Чистые функции без интерфейса — их проверяют тесты в папке tests/.
 Формулы:
-    • табличный режим — точное совпадение дальности со строкой таблицы;
-    • интерполяция — линейная между соседними строками (возвышение, delev, время);
+    • возвышение — линейная интерполяция между соседними строками таблицы (возвышение, delev, время);
+      на дальности из таблицы это ровно табличное значение;
     • поправка на превышение — delev MIL на каждые 100 м разницы высот:
       цель выше орудия → возвышение уменьшается, ниже → увеличивается;
     • поправка времени полёта — time_per_100 с на каждые 100 м разницы высот (4-й столбец таблицы):
       цель выше → снаряд встречает её раньше на нисходящей ветви, время меньше; ниже — больше.
       Знак в методичке не указан — принят по физике навесной стрельбы.
+    Поправки применяются, когда известны обе высоты — орудия и цели.
 """
 
 import math
@@ -24,29 +25,21 @@ class Solution:
     """Результат расчёта"""
     elevation: float                 # Итоговое возвышение, MIL
     base_elevation: float            # Возвышение без поправки на превышение, MIL
-    flight_time: float               # Время полёта (с поправкой на превышение, если она включена), с
-    correction: Optional[float]      # Поправка, MIL (None — поправка выключена)
-    lower_row: dict                  # Строка таблицы снизу (в табличном режиме = upper_row)
+    flight_time: float               # Время полёта (с поправкой на превышение, если она есть), с
+    correction: Optional[float]      # Поправка, MIL (None — высоты не заданы, поправки нет)
+    lower_row: dict                  # Строка таблицы снизу (на табличной дальности = upper_row)
     upper_row: dict                  # Строка таблицы сверху
     base_flight_time: Optional[float] = None   # Время полёта по таблице, без поправки
-    time_correction: Optional[float] = None    # Поправка времени, с (None — поправка выключена)
+    time_correction: Optional[float] = None    # Поправка времени, с (None — поправки нет)
 
 
 class OutOfTableError(ValueError):
-    """Для дальности нет значения: нет строки в таблице или дальность вне диапазона заряда"""
+    """Дальность вне диапазона заряда"""
 
     def __init__(self, title, details):
         super().__init__(f"{title}. {details}")
         self.title = title
         self.details = details
-
-
-def build_index(weapon_data):
-    """Индекс {орудие: {заряд: {дальность: строка}}} для быстрого табличного поиска"""
-    return {
-        weapon: {charge: {row["range"]: row for row in rows} for charge, rows in info["charge_data"].items()}
-        for weapon, info in weapon_data.items()
-    }
 
 
 def charge_rows(weapon_data, weapon, charge):
@@ -87,23 +80,20 @@ def closest_rows(rows, distance):
     return rows[i - 1], rows[i]
 
 
-def table_lookup(index, weapon, charge, distance):
-    """Строка таблицы с точно такой дальностью или None"""
-    return index.get(weapon, {}).get(charge, {}).get(distance)
-
-
 def interpolate(rows, distance):
     """Линейная интерполяция (elev, delev, time, нижняя строка, верхняя строка) или None"""
     lower, upper = closest_rows(rows, distance)
     if lower is None:
         return None
+    return (_lerp_rows(lower, upper, distance, "elev"), _lerp_rows(lower, upper, distance, "delev"),
+            _lerp_rows(lower, upper, distance, "time"), lower, upper)
+
+
+def _lerp_rows(lower, upper, distance, key):
+    """Значение столбца key между двумя строками таблицы (для одной строки — само значение)"""
     span = upper["range"] - lower["range"]
     ratio = (distance - lower["range"]) / span if span else 0.0
-
-    def lerp(key):
-        return lower[key] + (upper[key] - lower[key]) * ratio
-
-    return lerp("elev"), lerp("delev"), lerp("time"), lower, upper
+    return lower[key] + (upper[key] - lower[key]) * ratio
 
 
 def height_correction(elevation, delev, gun_height, target_height):
@@ -116,27 +106,30 @@ def height_correction(elevation, delev, gun_height, target_height):
     return elevation + adjustment, adjustment
 
 
-def solve(weapon_data, index, weapon, charge, distance, mode, gun_height=0.0, target_height=0.0,
-          apply_correction=False):
-    """Полный расчёт. mode: "table" или "nontable". Бросает OutOfTableError, если значения нет."""
-    rows = charge_rows(weapon_data, weapon, charge)
-    if mode == "table":
-        row = table_lookup(index, weapon, charge, distance)
-        if row is None:
-            raise OutOfTableError(
-                "Нет табличного значения",
-                f"Для {distance:g} м на заряде {charge} строки в таблице нет — выберите «Интерполяция».",
-            )
-        elevation, delev, flight_time, lower, upper = row["elev"], row["delev"], row["time"], row, row
-    else:
-        result = interpolate(rows, distance)
-        if result is None:
-            span = charge_range(rows)
-            hint = f" Дальность заряда {span[0]} – {span[1]} м." if span else ""
-            raise OutOfTableError("Вне диапазона", f"{distance:g} м недоступно для заряда {charge}.{hint}")
-        elevation, delev, flight_time, lower, upper = result
+def flight_time_correction(flight_time, time_per_100, gun_height, target_height):
+    """(итоговое время, величина поправки ≥ 0): time_per_100 с на каждые 100 м разницы высот"""
+    if time_per_100 is None:
+        return flight_time, 0.0
+    adjustment = abs(gun_height - target_height) * (time_per_100 / 100)
+    if target_height > gun_height:
+        return flight_time - adjustment, adjustment
+    return flight_time + adjustment, adjustment
 
-    if not apply_correction:
+
+def solve(weapon_data, weapon, charge, distance, gun_height=None, target_height=None):
+    """Полный расчёт. Поправки на превышение — если заданы обе высоты.
+
+    Бросает OutOfTableError, если дальность вне диапазона заряда.
+    """
+    rows = charge_rows(weapon_data, weapon, charge)
+    result = interpolate(rows, distance)
+    if result is None:
+        span = charge_range(rows)
+        hint = f" Дальность заряда {span[0]} – {span[1]} м." if span else ""
+        raise OutOfTableError("Вне диапазона", f"{distance:g} м недоступно для заряда {charge}.{hint}")
+    elevation, delev, flight_time, lower, upper = result
+
+    if gun_height is None or target_height is None:
         return Solution(elevation, elevation, flight_time, None, lower, upper, flight_time, None)
 
     final, _ = height_correction(elevation, delev, gun_height, target_height)
@@ -146,21 +139,23 @@ def solve(weapon_data, index, weapon, charge, distance, mode, gun_height=0.0, ta
                     flight_time, corrected_time - flight_time)
 
 
-def _lerp_rows(lower, upper, distance, key):
-    """Значение столбца key между двумя строками таблицы (для одной строки — само значение)"""
-    span = upper["range"] - lower["range"]
-    ratio = (distance - lower["range"]) / span if span else 0.0
-    return lower[key] + (upper[key] - lower[key]) * ratio
+def compare_charges(weapon_data, weapon, distance, gun_height=None, target_height=None):
+    """Расчёт по всем зарядам орудия, которые достают до дистанции: [(заряд, Solution), …]"""
+    result = []
+    for charge in allowed_charges(weapon_data, weapon):
+        try:
+            result.append((charge, solve(weapon_data, weapon, charge, distance, gun_height, target_height)))
+        except OutOfTableError:
+            pass
+    return result
 
 
-def flight_time_correction(flight_time, time_per_100, gun_height, target_height):
-    """(итоговое время, величина поправки ≥ 0): time_per_100 с на каждые 100 м разницы высот"""
-    if time_per_100 is None:
-        return flight_time, 0.0
-    adjustment = abs(gun_height - target_height) * (time_per_100 / 100)
-    if target_height > gun_height:
-        return flight_time - adjustment, adjustment
-    return flight_time + adjustment, adjustment
+def fastest_charge(weapon_data, weapon, distance):
+    """Заряд с самым коротким временем полёта (правило методички) или None, если ни один не достаёт"""
+    options = compare_charges(weapon_data, weapon, distance)
+    if not options:
+        return None
+    return min(options, key=lambda item: item[1].flight_time)[0]
 
 
 def adjust_fire(base_distance, along, lateral):
@@ -174,19 +169,6 @@ def adjust_fire(base_distance, along, lateral):
     distance = math.hypot(forward, lateral)
     direction = math.atan2(lateral, forward) * MILS_PER_CIRCLE / (2 * math.pi)
     return distance, direction
-
-
-def compare_charges(weapon_data, index, weapon, distance, mode, gun_height=0.0, target_height=0.0,
-                    apply_correction=False):
-    """Расчёт по всем зарядам орудия, которые дают решение: [(заряд, Solution), …]"""
-    result = []
-    for charge in allowed_charges(weapon_data, weapon):
-        try:
-            result.append((charge, solve(weapon_data, index, weapon, charge, distance, mode,
-                                         gun_height, target_height, apply_correction)))
-        except OutOfTableError:
-            pass
-    return result
 
 
 def validate_weapon_data(weapon_data):

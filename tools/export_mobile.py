@@ -29,7 +29,6 @@ def render():
 
     rules = {
         "displayNames": fr.DISPLAY_NAMES,
-        "heightRecommended": fr.HEIGHT_RECOMMENDED_M, "heightRequired": fr.HEIGHT_REQUIRED_M,
         "highTarget": fr.HIGH_TARGET_M, "highTargetWeapon": fr.HIGH_TARGET_WEAPON,
         "highTargetCharge": fr.HIGH_TARGET_CHARGE,
         "dispersion": fr.DISPERSION_M, "dispersionFar": fr.DISPERSION_FAR_M,

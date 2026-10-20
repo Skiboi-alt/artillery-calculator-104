@@ -2,22 +2,20 @@
 (function (root) {
   "use strict";
   const R = root.FIELD_RULES;
+  const B = root.Ballistics || (typeof require !== "undefined" ? require("./ballistics.js") : null);
   const g = (x) => String(Number(Number(x).toPrecision(6)));
 
   function displayName(weapon) {
     return R.displayNames[weapon] || weapon;
   }
 
-  // Подсказки к результату: [[уровень, текст], …]; высоты — null, если не введены
-  function advisories(weapon, charge, distance, gunHeight, targetHeight, correctionOn) {
+  // Подсказки к результату: [[уровень, текст], …]; высоты — null, если не введены (поправки нет)
+  function advisories(weapon, charge, distance, gunHeight, targetHeight) {
     const result = [];
-    if (gunHeight !== null && targetHeight !== null) {
+    if (gunHeight === null || targetHeight === null) {
+      result.push(["info", "Высоты не введены — поправка на превышение не учтена"]);
+    } else {
       const diff = targetHeight - gunHeight;
-      if (!correctionOn && Math.abs(diff) >= R.heightRecommended) {
-        const required = Math.abs(diff) >= R.heightRequired;
-        result.push([required ? "warn" : "info",
-          `Перепад высот ${g(Math.abs(diff))} м — поправка на превышение ${required ? "обязательна" : "рекомендуется"}`]);
-      }
       if (weapon === R.highTargetWeapon && diff >= R.highTarget && charge < R.highTargetCharge) {
         result.push(["warn", `Цель выше на ${g(diff)} м — берите заряд ${R.highTargetCharge}: дуги заряда ${charge} может не хватить`]);
       }
@@ -28,7 +26,17 @@
     return result;
   }
 
-  const api = { displayName, advisories };
+  // Заряд для автоподбора: самый быстрый, но при цели выше на 300+ м для Молота — заряд 2
+  function recommendedCharge(data, weapon, distance, gunHeight = null, targetHeight = null) {
+    if (gunHeight !== null && targetHeight !== null && weapon === R.highTargetWeapon
+        && targetHeight - gunHeight >= R.highTarget
+        && B.chargesForDistance(data, weapon, distance).includes(R.highTargetCharge)) {
+      return R.highTargetCharge;
+    }
+    return B.fastestCharge(data, weapon, distance);
+  }
+
+  const api = { displayName, advisories, recommendedCharge };
   root.FieldRules = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

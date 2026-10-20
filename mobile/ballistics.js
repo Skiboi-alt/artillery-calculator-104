@@ -1,7 +1,7 @@
 // Расчёт возвышения — точный перенос ballistics.py (программа для ПК).
 // Формулы:
-//   • табличный режим — точное совпадение дальности со строкой таблицы;
-//   • интерполяция — линейная между соседними строками (возвышение, delev, время);
+//   • возвышение — линейная интерполяция между соседними строками (возвышение, delev, время);
+//     на дальности из таблицы это ровно табличное значение;
 //   • поправка на превышение — delev MIL на каждые 100 м разницы высот:
 //     цель выше орудия → возвышение уменьшается, ниже → увеличивается.
 (function (root) {
@@ -60,18 +60,20 @@
     return [rows[lo - 1], rows[lo]];
   }
 
-  function tableLookup(rows, distance) {
-    return rows.find((row) => row.range === distance) || null;
-  }
-
-  // [elev, delev, time, нижняя строка, верхняя строка] или null
+  // [elev, delev, time, нижняя строка, верхняя строка] или null.
+  // На дальности из таблицы — ровно табличная строка.
   function interpolate(rows, distance) {
     const [lower, upper] = closestRows(rows, distance);
     if (!lower) return null;
+    const lerp = (key) => lerpRows(lower, upper, distance, key);
+    return [lerp("elev"), lerp("delev"), lerp("time"), lower, upper];
+  }
+
+  // Значение столбца между двумя строками таблицы (для одной строки — само значение)
+  function lerpRows(lower, upper, distance, key) {
     const span = upper.range - lower.range;
     const ratio = span ? (distance - lower.range) / span : 0;
-    const lerp = (key) => lower[key] + (upper[key] - lower[key]) * ratio;
-    return [lerp("elev"), lerp("delev"), lerp("time"), lower, upper];
+    return lower[key] + (upper[key] - lower[key]) * ratio;
   }
 
   // [итоговое возвышение, величина поправки >= 0]
@@ -80,47 +82,6 @@
     const adjustment = Math.abs(gunHeight - targetHeight) * (delev / 100);
     if (targetHeight > gunHeight) return [elevation - adjustment, adjustment];
     return [elevation + adjustment, adjustment];
-  }
-
-  // Полный расчёт. mode: "table" | "nontable". Бросает OutOfTableError, если значения нет.
-  function solve(data, weapon, charge, distance, mode, gunHeight = 0, targetHeight = 0, applyCorrection = false) {
-    const rows = chargeRows(data, weapon, charge);
-    let elevation, delev, flightTime, lower, upper;
-    if (mode === "table") {
-      const row = tableLookup(rows, distance);
-      if (!row) {
-        throw new OutOfTableError(
-          "Нет табличного значения",
-          `Для ${g(distance)} м на заряде ${charge} строки в таблице нет — выберите «Интерполяция».`
-        );
-      }
-      [elevation, delev, flightTime, lower, upper] = [row.elev, row.delev, row.time, row, row];
-    } else {
-      const result = interpolate(rows, distance);
-      if (!result) {
-        const span = chargeRange(rows);
-        const hint = span ? ` Дальность заряда ${span[0]} – ${span[1]} м.` : "";
-        throw new OutOfTableError("Вне диапазона", `${g(distance)} м недоступно для заряда ${charge}.${hint}`);
-      }
-      [elevation, delev, flightTime, lower, upper] = result;
-    }
-
-    if (!applyCorrection) {
-      return { elevation, baseElevation: elevation, flightTime, correction: null, lowerRow: lower, upperRow: upper,
-               baseFlightTime: flightTime, timeCorrection: null };
-    }
-    const final = heightCorrection(elevation, delev, gunHeight, targetHeight)[0];
-    const timePer100 = lerpRows(lower, upper, distance, "time_per_100");
-    const correctedTime = flightTimeCorrection(flightTime, timePer100, gunHeight, targetHeight)[0];
-    return { elevation: final, baseElevation: elevation, flightTime: correctedTime, correction: final - elevation,
-             lowerRow: lower, upperRow: upper, baseFlightTime: flightTime, timeCorrection: correctedTime - flightTime };
-  }
-
-  // Значение столбца между двумя строками таблицы (для одной строки — само значение)
-  function lerpRows(lower, upper, distance, key) {
-    const span = upper.range - lower.range;
-    const ratio = span ? (distance - lower.range) / span : 0;
-    return lower[key] + (upper[key] - lower[key]) * ratio;
   }
 
   // Поправка времени полёта (4-й столбец): цель выше — прилёт раньше, ниже — позже.
@@ -132,6 +93,49 @@
     return [flightTime + adjustment, adjustment];
   }
 
+  // Полный расчёт. Поправки на превышение — если заданы обе высоты (не null).
+  // Бросает OutOfTableError, если дальность вне диапазона заряда.
+  function solve(data, weapon, charge, distance, gunHeight = null, targetHeight = null) {
+    const rows = chargeRows(data, weapon, charge);
+    const result = interpolate(rows, distance);
+    if (!result) {
+      const span = chargeRange(rows);
+      const hint = span ? ` Дальность заряда ${span[0]} – ${span[1]} м.` : "";
+      throw new OutOfTableError("Вне диапазона", `${g(distance)} м недоступно для заряда ${charge}.${hint}`);
+    }
+    const [elevation, delev, flightTime, lower, upper] = result;
+
+    if (gunHeight === null || targetHeight === null) {
+      return { elevation, baseElevation: elevation, flightTime, correction: null, lowerRow: lower, upperRow: upper,
+               baseFlightTime: flightTime, timeCorrection: null };
+    }
+    const final = heightCorrection(elevation, delev, gunHeight, targetHeight)[0];
+    const timePer100 = lerpRows(lower, upper, distance, "time_per_100");
+    const correctedTime = flightTimeCorrection(flightTime, timePer100, gunHeight, targetHeight)[0];
+    return { elevation: final, baseElevation: elevation, flightTime: correctedTime, correction: final - elevation,
+             lowerRow: lower, upperRow: upper, baseFlightTime: flightTime, timeCorrection: correctedTime - flightTime };
+  }
+
+  // Расчёт по всем зарядам орудия, которые достают до дистанции: [[заряд, решение], …]
+  function compareCharges(data, weapon, distance, gunHeight = null, targetHeight = null) {
+    const result = [];
+    for (const charge of allowedCharges(data, weapon)) {
+      try {
+        result.push([charge, solve(data, weapon, charge, distance, gunHeight, targetHeight)]);
+      } catch (e) {
+        if (!(e instanceof OutOfTableError)) throw e;
+      }
+    }
+    return result;
+  }
+
+  // Заряд с самым коротким временем полёта (правило методички) или null
+  function fastestCharge(data, weapon, distance) {
+    const options = compareCharges(data, weapon, distance);
+    if (!options.length) return null;
+    return options.reduce((a, b) => (b[1].flightTime < a[1].flightTime ? b : a))[0];
+  }
+
   const MILS_PER_CIRCLE = 6400; // Угломер НАТО, как в Arma 3
 
   // Корректировка огня относительно линии орудие–цель.
@@ -140,19 +144,6 @@
   function adjustFire(baseDistance, along, lateral) {
     const forward = baseDistance + along;
     return [Math.hypot(forward, lateral), Math.atan2(lateral, forward) * MILS_PER_CIRCLE / (2 * Math.PI)];
-  }
-
-  // Расчёт по всем зарядам орудия, которые дают решение: [[заряд, решение], …]
-  function compareCharges(data, weapon, distance, mode, gunHeight = 0, targetHeight = 0, applyCorrection = false) {
-    const result = [];
-    for (const charge of allowedCharges(data, weapon)) {
-      try {
-        result.push([charge, solve(data, weapon, charge, distance, mode, gunHeight, targetHeight, applyCorrection)]);
-      } catch (e) {
-        if (!(e instanceof OutOfTableError)) throw e;
-      }
-    }
-    return result;
   }
 
   // Проверка целостности таблиц: список проблем (пустой — всё в порядке)
@@ -176,8 +167,8 @@
 
   const api = {
     OutOfTableError, g, chargeRows, allowedCharges, chargeRange, chargesForDistance,
-    closestRows, tableLookup, interpolate, heightCorrection, solve, validateWeaponData,
-    MILS_PER_CIRCLE, adjustFire, compareCharges, flightTimeCorrection,
+    closestRows, interpolate, heightCorrection, solve, validateWeaponData,
+    MILS_PER_CIRCLE, adjustFire, compareCharges, fastestCharge, flightTimeCorrection,
   };
   root.Ballistics = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

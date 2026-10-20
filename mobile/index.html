@@ -72,6 +72,7 @@
           </div>
         </div>
       </div>
+      <div class="game-line" id="resGame" hidden></div>
       <p class="res-message" id="resMessage">Заполните параметры и нажмите «Рассчитать»</p>
       <p class="res-detail" id="resDetail"></p>
       <ul class="advice" id="adviceList"></ul>
@@ -119,16 +120,7 @@
         </label>
       </div>
 
-      <div class="caption">Режим расчёта</div>
-      <div class="segmented" id="modeSeg" role="radiogroup" aria-label="Режим расчёта"></div>
-
-      <label class="toggle-row" for="correction">
-        <span>
-          <b>Поправка на превышение</b>
-          <small>Учитывать разницу высот орудия и цели</small>
-        </span>
-        <input type="checkbox" id="correction" class="switch">
-      </label>
+      <p class="field-hint">Обе высоты заполнены — поправка на превышение учитывается сама. Пусто — без поправки.</p>
     </section>
 
     <section class="card">
@@ -165,6 +157,7 @@
         <small>Здесь появятся последние расчёты</small>
       </div>
     </section>
+    <p class="credit">made by SmaleUp</p>
   </main>
 
   <footer class="actionbar">

@@ -33,7 +33,7 @@ from storage import Store, get_resource_path, log, setup_logging
 from version import APP_VERSION, MOBILE_URL, REPOSITORY, WHATS_NEW
 from ui_widgets import (
     COLORS, HistoryList, InputField, RoundedButton, RoundedPanel, SegmentedControl, Theme,
-    ToggleSwitch, Tween, apply_dark_titlebar, draw_armor_stripes, draw_wolf, enable_dpi_awareness, round_rect,
+    Tween, apply_dark_titlebar, draw_armor_stripes, draw_wolf, enable_dpi_awareness, round_rect,
 )
 from weapons_data import WEAPON_DATA
 
@@ -73,7 +73,6 @@ class ArtilleryCalculator:
 
         # Данные и их проверка (ошибки таблиц пишутся в журнал)
         self.weapon_data = WEAPON_DATA
-        self.weapon_index = ballistics.build_index(WEAPON_DATA)
         for problem in ballistics.validate_weapon_data(WEAPON_DATA):
             log.warning("Таблицы: %s", problem)
 
@@ -85,9 +84,8 @@ class ArtilleryCalculator:
         weapon = settings.get("weapon")
         self.current_weapon = tk.StringVar(value=weapon if weapon in WEAPON_DATA else "Миномёт")
         self.charge_var = tk.StringVar(value=str(settings.get("charge", "0")))
-        mode = settings.get("calculation_mode")
-        self.calculation_mode = tk.StringVar(value=mode if mode in ("table", "nontable") else "table")
-        self.apply_height_correction = tk.BooleanVar(value=bool(settings.get("apply_height_correction", False)))
+        # Заряд подбирается сам (самый быстрый), пока пользователь не выбрал его вручную
+        self.charge_manual = bool(settings.get("charge_manual", False))
         self.history = [h for h in settings.get("history", []) if isinstance(h, dict) and "elevation" in h]
         self.result_text = ""
         self.info_text = ""
@@ -162,8 +160,7 @@ class ArtilleryCalculator:
         self.store.settings.update({
             "weapon": self.current_weapon.get(),
             "charge": self.charge_var.get(),
-            "calculation_mode": self.calculation_mode.get(),
-            "apply_height_correction": self.apply_height_correction.get(),
+            "charge_manual": self.charge_manual,
             "inputs": {name: field.get() for name, field in self.entries.items()},
             "history": self.history[:MAX_HISTORY],
             "adjust_step": self.adjust_step.get(),
@@ -193,7 +190,6 @@ class ArtilleryCalculator:
         self.result_card.grid(row=0, column=1, sticky="nsew")
 
         self._on_weapon_change()
-        self._on_correction_change()
         self._show_empty_result()
         self.history_list.set_items(self.history)
 
@@ -241,7 +237,7 @@ class ArtilleryCalculator:
         subtitle.pack(anchor="w")
         tk.Label(subtitle, text="104-Й ДОБ  «ВОЛЧЬЯ СТАЯ»", font=self.theme.caption,
                  fg=COLORS["text"], bg=COLORS["bg"]).pack(side=tk.LEFT)
-        tk.Label(subtitle, text=f"   ·   ARMA 3   ·   RS:Q   ·   v{APP_VERSION}", font=self.theme.subtitle,
+        tk.Label(subtitle, text=f"   ·   ARMA 3   ·   RS:Q   ·   v{APP_VERSION}   ·   made by SmaleUp", font=self.theme.subtitle,
                  fg=COLORS["text_muted"], bg=COLORS["bg"]).pack(side=tk.LEFT)
 
         self.saves_button = RoundedButton(
@@ -295,7 +291,7 @@ class ArtilleryCalculator:
         self._caption(inner, "Заряд").pack(fill=tk.X, pady=(0, px(6)))
         self.charge_control = SegmentedControl(
             inner, self.theme, self.charge_var, [], surface,
-            command=self._update_charge_hint,
+            command=self._on_charge_manual,
         )
         self.charge_control.pack(fill=tk.X)
         hint_row = tk.Frame(inner, bg=surface)
@@ -316,7 +312,7 @@ class ArtilleryCalculator:
         self.entries["distance"].entry.bind("<KeyRelease>", self._on_distance_key, add="+")
 
         heights = tk.Frame(inner, bg=surface)
-        heights.pack(fill=tk.X, pady=(0, px(16)))
+        heights.pack(fill=tk.X)
         heights.columnconfigure(0, weight=1, uniform="h")
         heights.columnconfigure(1, weight=1, uniform="h")
         self.entries["user_height"] = InputField(heights, self.theme, "Высота орудия", surface,
@@ -326,29 +322,10 @@ class ArtilleryCalculator:
                                                    suffix="м", placeholder="0")
         self.entries["target_height"].grid(row=0, column=1, sticky="ew", padx=(px(7), 0))
 
-        # Режим расчёта
-        self._caption(inner, "Режим расчёта").pack(fill=tk.X, pady=(0, px(6)))
-        SegmentedControl(
-            inner, self.theme, self.calculation_mode,
-            [("table", "По таблице"), ("nontable", "Интерполяция")], surface,
-        ).pack(fill=tk.X, pady=(0, px(16)))
-
-        # Поправка на высоту
-        toggle_row = tk.Frame(inner, bg=surface, cursor="hand2")
-        toggle_row.pack(fill=tk.X)
-        toggle = ToggleSwitch(toggle_row, self.theme, self.apply_height_correction, surface)
-        toggle.pack(side=tk.RIGHT)
-        texts = tk.Frame(toggle_row, bg=surface)
-        texts.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        title = tk.Label(texts, text="Поправка на превышение", font=self.theme.body_strong,
-                         fg=COLORS["text"], bg=surface, anchor="w", cursor="hand2")
-        title.pack(fill=tk.X)
-        subtitle = tk.Label(texts, text="Учитывать разницу высот орудия и цели", font=self.theme.small,
-                            fg=COLORS["text_muted"], bg=surface, anchor="w", cursor="hand2")
-        subtitle.pack(fill=tk.X)
-        for widget in (toggle_row, texts, title, subtitle):
-            widget.bind("<Button-1>", lambda e: toggle.toggle())
-        self.apply_height_correction.trace_add("write", lambda *args: self._on_correction_change())
+        # Поправка на превышение включается сама, когда заполнены обе высоты
+        tk.Label(inner, text="Обе высоты заполнены — поправка на превышение учитывается сама. "
+                             "Пусто — без поправки.", font=self.theme.small, fg=COLORS["text_faint"],
+                 bg=surface, anchor="w", justify=tk.LEFT, wraplength=px(440)).pack(fill=tk.X, pady=(px(6), 0))
 
         self._create_adjust_panel(inner)
         return card
@@ -406,6 +383,7 @@ class ArtilleryCalculator:
         self._caption(inner, "Возвышение").pack(fill=tk.X, pady=(px(20), 0))
         value_row = tk.Frame(inner, bg=surface)
         value_row.pack(fill=tk.X)
+        self._value_row = value_row
         self.res_value = tk.Label(value_row, text="—", font=self.theme.result_big,
                                   fg=COLORS["text_faint"], bg=surface)
         self.res_value.pack(side=tk.LEFT)
@@ -413,6 +391,11 @@ class ArtilleryCalculator:
                                  fg=COLORS["text_muted"], bg=surface)
         self.res_unit.pack(side=tk.LEFT, anchor="s", padx=(px(8), 0), pady=(0, px(14)))
         self.value_tween = Tween(self.res_value, self._set_shown_elevation, duration_ms=450, easing="out")
+
+        # «Что выставить в игре» — в порядке действий по методичке (тестовая функция).
+        # Показывается только при результате, поэтому пакуется в _show_game_line
+        self.res_game = tk.Label(inner, text="", font=self.theme.body_strong, fg=COLORS["text"],
+                                 bg=COLORS["surface_2"], anchor="w", padx=px(12), pady=px(6))
 
         self.res_message = tk.Label(inner, text="", font=self.theme.body, fg=COLORS["text_muted"],
                                     bg=surface, anchor="w", justify=tk.LEFT)
@@ -497,6 +480,7 @@ class ArtilleryCalculator:
             tile.value.config(text="—", fg=COLORS["text_faint"])
             tile.note.config(text="")
         self.res_detail.config(text="")
+        self.res_game.pack_forget()
         self._render_comparison([], None)
         self._render_advice([])
 
@@ -526,8 +510,8 @@ class ArtilleryCalculator:
     def _show_result(self, solution, charge, distance, animate=True, comparison=(), advice=()):
         self._stop_timer()
         self.last_solution = solution
-        mode = "Таблица" if self.calculation_mode.get() == "table" else "Интерполяция"
-        self._set_status_pill(mode, "ok")
+        exact = solution.lower_row is solution.upper_row
+        self._set_status_pill("Таблица" if exact else "Интерполяция", "ok")
 
         # Число плавно «докручивается» от прошлого значения до нового
         target = solution.elevation
@@ -548,6 +532,7 @@ class ArtilleryCalculator:
         self.res_message.config(text=message, fg=COLORS["text_muted"])
         self._render_comparison(comparison, charge)
         self._render_advice(advice)
+        self._show_game_line(solution, charge)
         lower, upper = solution.lower_row, solution.upper_row
         if lower is upper:
             self.res_detail.config(text=f"Строка таблицы: {lower['range']} м → {lower['elev']} MIL")
@@ -581,13 +566,30 @@ class ArtilleryCalculator:
         self.charge_control.set_options([(str(c), str(c)) for c in charges])
         if self.charge_var.get() not in [str(c) for c in charges]:
             self.charge_var.set(str(charges[0]) if charges else "")
+        self.charge_manual = False  # Другое орудие — заряд снова подбирается сам
         self._update_charge_hint()
 
-    def _on_correction_change(self):
-        # Высоты нужны только при включённой поправке — иначе поля приглушены
-        dimmed = not self.apply_height_correction.get()
+    def _on_charge_manual(self):
+        """Заряд выбран вручную — автоподбор не трогает его до смены дистанции или орудия"""
+        self.charge_manual = True
+        self._update_charge_hint()
+
+    def _entered_heights(self):
+        """(высота орудия, высота цели), если обе введены числами, иначе (None, None)"""
+        values = []
         for name in ("user_height", "target_height"):
-            self.entries[name].set_dimmed(dimmed)
+            try:
+                values.append(float(self.entries[name].get().strip().replace(",", ".")))
+            except ValueError:
+                return None, None
+        return tuple(values)
+
+    def _auto_select_charge(self, distance, gun_height=None, target_height=None):
+        """Правила методички: самый быстрый заряд, а при цели выше на 300+ м — заряд 2"""
+        best = field_rules.recommended_charge(self.weapon_data, self.get_current_weapon_name(), distance,
+                                              gun_height, target_height)
+        if best is not None and self.charge_var.get() != str(best):
+            self.charge_var.set(str(best))
 
     def _current_distance(self):
         """Дистанция из поля или None, если там не число"""
@@ -619,15 +621,21 @@ class ArtilleryCalculator:
             self.charge_control.set_suggested(None)
             self.charge_suggestion.config(text="")
             return
+        if not self.charge_manual:
+            self._auto_select_charge(distance, *self._entered_heights())
         suitable = ballistics.charges_for_distance(self.weapon_data, weapon, distance)
         self.charge_control.set_suggested(suitable)
         if not suitable:
             self.charge_suggestion.config(text="Ни один заряд не достаёт", fg=COLORS["error"])
-        elif self.charge_var.get() in [str(c) for c in suitable]:
-            self.charge_suggestion.config(text="Заряд подходит", fg=COLORS["text_muted"])
-        else:
+        elif self.charge_var.get() not in [str(c) for c in suitable]:
             listed = ", ".join(str(c) for c in suitable)
-            self.charge_suggestion.config(text=f"Подходят: {listed}", fg=COLORS["text"])
+            self.charge_suggestion.config(text=f"Не достаёт · подходят: {listed}", fg=COLORS["error"])
+        elif self.charge_manual:
+            self.charge_suggestion.config(text="Выбран вручную", fg=COLORS["text_muted"])
+        elif self.charge_var.get() != str(ballistics.fastest_charge(self.weapon_data, weapon, distance)):
+            self.charge_suggestion.config(text="Авто: цель выше на 300+ м", fg=COLORS["text_muted"])
+        else:
+            self.charge_suggestion.config(text="Авто: самый быстрый", fg=COLORS["text_muted"])
 
     def _update_saves_button(self):
         count = len(self.saved_values)
@@ -645,8 +653,6 @@ class ArtilleryCalculator:
             "user_height": self.entries["user_height"].get(),
             "target_height": self.entries["target_height"].get(),
             "weapon": self.get_current_weapon_name(),
-            "calculation_mode": self.calculation_mode.get(),
-            "apply_height_correction": self.apply_height_correction.get(),
         }
 
     def _add_history(self, solution, charge, distance):
@@ -990,13 +996,10 @@ class ArtilleryCalculator:
         charge = str(data.get("charge", "")).strip()
         if charge in [str(c) for c in self.get_current_weapon_allowed_charges()]:
             self.charge_var.set(charge)
+            self.charge_manual = True  # Сохранённый расчёт повторяется с тем же зарядом
 
         for field_name in ("distance", "user_height", "target_height"):
             self.entries[field_name].set(str(data.get(field_name, "")))
-
-        mode = data.get("calculation_mode", "table")
-        self.calculation_mode.set(mode if mode in ("table", "nontable") else "table")
-        self.apply_height_correction.set(bool(data.get("apply_height_correction", False)))
         self._update_charge_hint()
 
     def _apply_save(self, name):
@@ -1025,7 +1028,7 @@ class ArtilleryCalculator:
         Возвращает кортеж (distance, charge, user_height, target_height).
         При ошибке бросает InputError с понятным сообщением и именем поля.
         """
-        def parse_number(field_name, field_title, required=True, default=0.0):
+        def parse_number(field_name, field_title, required=True, default=None):
             text = self.entries[field_name].get().strip()
             if not text:
                 if required:
@@ -1050,17 +1053,19 @@ class ArtilleryCalculator:
         if charge not in allowed_charges:
             raise InputError(f"Заряд должен быть одним из: {', '.join(map(str, allowed_charges))}")
 
-        # Высоты обязательны только при включённой поправке
-        heights_required = self.apply_height_correction.get()
+        # Высоты необязательны: обе — поправка на превышение, ни одной — без поправки
         distance = parse_number("distance", "Дистанция до цели")
-        user_height = parse_number("user_height", "Высота орудия", heights_required)
-        target_height = parse_number("target_height", "Высота цели", heights_required)
+        user_height = parse_number("user_height", "Высота орудия", required=False)
+        target_height = parse_number("target_height", "Высота цели", required=False)
 
         if distance <= 0:
             raise InputError("Дистанция должна быть больше 0", "distance")
-        if user_height < 0:
+        if (user_height is None) != (target_height is None):
+            missing = "user_height" if user_height is None else "target_height"
+            raise InputError("Введите обе высоты или оставьте обе пустыми", missing)
+        if user_height is not None and user_height < 0:
             raise InputError("Высота орудия не может быть отрицательной", "user_height")
-        if target_height < 0:
+        if target_height is not None and target_height < 0:
             raise InputError("Высота цели не может быть отрицательной", "target_height")
 
         return distance, charge, user_height, target_height
@@ -1081,26 +1086,19 @@ class ArtilleryCalculator:
                 self.show_notification(str(e), notification_type="error")
             return
 
+        weapon = self.get_current_weapon_name()
+        if not self.charge_manual:
+            self._auto_select_charge(distance, user_height, target_height)
+            charge = int(self.charge_var.get())
+            self._update_charge_hint()
         try:
-            solution = ballistics.solve(
-                self.weapon_data, self.weapon_index, self.get_current_weapon_name(), charge, distance,
-                self.calculation_mode.get(), user_height, target_height, self.apply_height_correction.get(),
-            )
+            solution = ballistics.solve(self.weapon_data, weapon, charge, distance, user_height, target_height)
         except ballistics.OutOfTableError as e:
             self._show_error_result(e.title, e.details)
             return
 
-        comparison = ballistics.compare_charges(
-            self.weapon_data, self.weapon_index, self.get_current_weapon_name(), distance,
-            self.calculation_mode.get(), user_height, target_height, self.apply_height_correction.get(),
-        )
-        # Подсказки знают высоты, только если оба поля заполнены
-        heights_entered = all(self.entries[n].get().strip() for n in ("user_height", "target_height"))
-        advice = field_rules.advisories(
-            self.get_current_weapon_name(), charge, distance,
-            user_height if heights_entered else None, target_height if heights_entered else None,
-            self.apply_height_correction.get(),
-        )
+        comparison = ballistics.compare_charges(self.weapon_data, weapon, distance, user_height, target_height)
+        advice = field_rules.advisories(weapon, charge, distance, user_height, target_height)
         self._show_result(solution, charge, distance, animate=not silent, comparison=comparison, advice=advice)
         self._add_history(solution, charge, distance)
 
@@ -1137,6 +1135,13 @@ class ArtilleryCalculator:
                              fill=COLORS["text"] if active else COLORS["text_muted"])
             chip.bind("<Button-1>", lambda e, c=charge: self._select_charge(c))
 
+    def _show_game_line(self, solution, charge):
+        """В игре: возвышение (PageUp/PageDown), заряд (F), время прилёта"""
+        self.res_game.config(text=f"В игре:   ELV {solution.elevation:.1f}   ·   заряд {charge} (F)   ·   "
+                                  f"прилёт {solution.flight_time:.0f} с")
+        if not self.res_game.winfo_ismapped():
+            self.res_game.pack(fill=tk.X, after=self._value_row, pady=(0, self.theme.px(8)))
+
     def _render_advice(self, advice):
         """Подсказки по методичке под результатом: warn — акцентом, info — приглушённо"""
         for child in self.advice_frame.winfo_children():
@@ -1155,6 +1160,7 @@ class ArtilleryCalculator:
 
     def _select_charge(self, charge):
         self.charge_var.set(str(charge))
+        self.charge_manual = True
         self._update_charge_hint()
         self.calculate()
 
@@ -1186,12 +1192,6 @@ class ArtilleryCalculator:
         distance, _ = ballistics.adjust_fire(self.adjust["base"], self.adjust["along"], self.adjust["lateral"])
         distance = round(distance, 1)
         self.entries["distance"].set(f"{distance:g}")
-        # Дистанция после корректировки почти никогда не совпадает со строкой таблицы
-        if self.calculation_mode.get() == "table" and \
-                ballistics.table_lookup(self.weapon_index, self.get_current_weapon_name(),
-                                        int(self.charge_var.get() or 0), distance) is None:
-            self.calculation_mode.set("nontable")
-            self.show_notification("Режим переключён на интерполяцию")
         self._update_adjust_status()
         self._update_charge_hint()
         self.calculate()
@@ -1240,6 +1240,7 @@ class ArtilleryCalculator:
         if self.adjust is not None:
             self.adjust = None
             self._update_adjust_status()
+        self.charge_manual = False  # Новая дистанция — заряд снова подбирается сам
         self._update_charge_hint()
 
     # ------------------------------------------------------------------
@@ -1305,20 +1306,17 @@ class ArtilleryCalculator:
 
     HELP_SECTIONS = [
         ("Порядок расчёта",
-         "Выберите орудие и заряд, введите дистанцию до цели и нажмите «Рассчитать» (Enter). "
-         "Заряды, которые не достают до цели, приглушены. Методичка советует брать меньший заряд — "
-         "снаряд летит быстрее; в строке «Заряды» самый быстрый помечен."),
-        ("Режимы",
-         "«По таблице» — только дальности из таблицы (шаг 50 или 100 м). «Интерполяция» — любая "
-         "дальность внутри диапазона заряда: значение берётся между двумя соседними строками таблицы."),
+         "Выберите орудие, введите дистанцию до цели и нажмите «Рассчитать» (Enter). Заряд подбирается "
+         "сам — самый быстрый из подходящих, как советует методичка; другой можно выбрать вручную или "
+         "нажатием в строке «Заряды». Значение всегда берётся по таблице: на табличной дальности — "
+         "строка таблицы, между строками — интерполяция."),
         ("Поправка на превышение",
-         "Учитывает разницу высот орудия и цели (высоты — с карты, над уровнем моря). Цель выше — "
-         "возвышение уменьшается, ниже — увеличивается. Время полёта тоже поправляется по 4-му столбцу "
-         "таблицы: цель выше — прилёт раньше, ниже — позже. Методичка: поправка желательна от 50 м "
-         "разницы, обязательна от 100 м — программа подскажет, если она выключена."),
+         "Включается сама, когда заполнены обе высоты — орудия и цели (с карты, над уровнем моря). "
+         "Цель выше — возвышение уменьшается, ниже — увеличивается. Время полёта тоже поправляется по "
+         "4-му столбцу таблицы: цель выше — прилёт раньше. Пустые поля — расчёт без поправки."),
         ("Подсказки под результатом",
-         "Напоминания из методички: перепад высот без поправки; цель выше на 300 м и больше — для Молота "
-         "нужен заряд 2; разброс до 20 м — проверьте, что союзников нет рядом с целью."),
+         "Напоминания из методички: высоты не введены; цель выше на 300 м и больше — для Молота нужен "
+         "заряд 2; разброс до 20 м — проверьте, что союзников нет рядом с целью."),
         ("Корректировка огня",
          "После выстрела по докладу наблюдателя: «Недолёт» — дальше на шаг, «Перелёт» — ближе, "
          "«Левее» / «Правее» — сместить разрыв вбок. Сдвиги считаются относительно линии орудие–цель; "
@@ -1329,7 +1327,7 @@ class ArtilleryCalculator:
          "5 секунд, длинный — в момент разрыва. Повторное нажатие останавливает таймер."),
         ("Клавиши",
          "Enter — расчёт · F2 — таймер · F1 — справка · Ctrl+S — сохранить · Ctrl+O — сохранения · "
-         "Tab — по элементам · ←/→ — переключатели · пробел — тумблер и кнопки."),
+         "Tab — по элементам · ←/→ — переключатели · пробел — кнопки."),
     ]
 
     def show_help(self):
@@ -1339,7 +1337,7 @@ class ArtilleryCalculator:
         body.pack(padx=px(26), pady=px(22))
         tk.Label(body, text="Справка", font=self.theme.title, fg=COLORS["text"],
                  bg=COLORS["surface"]).pack(anchor="w")
-        tk.Label(body, text=f"Артиллерийский калькулятор 104-го ДОБ · версия {APP_VERSION}", font=self.theme.small,
+        tk.Label(body, text=f"Артиллерийский калькулятор 104-го ДОБ · версия {APP_VERSION} · сделано SmaleUp", font=self.theme.small,
                  fg=COLORS["text_muted"], bg=COLORS["surface"]).pack(anchor="w", pady=(0, px(10)))
         # Две колонки — чтобы окно помещалось по высоте даже на ноутбуке
         grid = tk.Frame(body, bg=COLORS["surface"])

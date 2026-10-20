@@ -16,33 +16,50 @@ def texts(items):
 
 
 class AdvisoriesTest(unittest.TestCase):
-    def test_only_dispersion_when_flat(self):
-        items = fr.advisories(MORTAR, 1, 1000, 100, 120, correction_on=False)
+    def test_only_dispersion_with_heights(self):
+        items = fr.advisories(MORTAR, 1, 1000, 100, 120)
         self.assertEqual(len(items), 1)
         self.assertIn("Разброс до 20 м", items[0][1])
         self.assertEqual(items[0][0], "info")
 
-    def test_height_recommended_and_required(self):
-        rec = fr.advisories(MORTAR, 1, 1000, 100, 160, correction_on=False)
-        self.assertEqual(rec[0], ("info", "Перепад высот 60 м — поправка на превышение рекомендуется"))
-        req = fr.advisories(MORTAR, 1, 1000, 100, 0, correction_on=False)
-        self.assertEqual(req[0], ("warn", "Перепад высот 100 м — поправка на превышение обязательна"))
-
-    def test_no_height_hint_when_correction_on(self):
-        self.assertFalse(any("Перепад" in t for t in texts(fr.advisories(MORTAR, 1, 1000, 0, 500, True))))
-
-    def test_no_height_hint_without_heights(self):
-        self.assertEqual(len(fr.advisories(MORTAR, 1, 1000, None, None, False)), 1)
+    def test_no_heights_reminder(self):
+        items = fr.advisories(MORTAR, 1, 1000, None, None)
+        self.assertEqual(items[0], ("info", "Высоты не введены — поправка на превышение не учтена"))
+        self.assertEqual(len(items), 2)
 
     def test_high_target_needs_charge_2(self):
-        warn = [t for t in texts(fr.advisories(MORTAR, 1, 1000, 0, 300, True)) if "заряд 2" in t]
+        warn = [t for t in texts(fr.advisories(MORTAR, 1, 1000, 0, 300)) if "заряд 2" in t]
         self.assertEqual(len(warn), 1)
-        self.assertFalse(any("заряд 2" in t for t in texts(fr.advisories(MORTAR, 2, 1000, 0, 300, True))))
-        self.assertFalse(any("заряд 2" in t for t in texts(fr.advisories(MORTAR, 1, 1000, 0, 299, True))))
-        self.assertFalse(any("заряд 2" in t for t in texts(fr.advisories(SLEDGE, 0, 1000, 0, 500, True))))
+        self.assertFalse(any("заряд 2" in t for t in texts(fr.advisories(MORTAR, 2, 1000, 0, 300))))
+        self.assertFalse(any("заряд 2" in t for t in texts(fr.advisories(MORTAR, 1, 1000, 0, 299))))
+        self.assertFalse(any("заряд 2" in t for t in texts(fr.advisories(SLEDGE, 0, 1000, 0, 500))))
 
     def test_far_dispersion_is_warning(self):
-        self.assertEqual(fr.advisories(MORTAR, 2, 4050, None, None, False)[-1][0], "warn")
+        self.assertEqual(fr.advisories(MORTAR, 2, 4050, None, None)[-1][0], "warn")
+
+
+class RecommendedChargeTest(unittest.TestCase):
+    def setUp(self):
+        from weapons_data import WEAPON_DATA
+        self.data = WEAPON_DATA
+
+    def test_fastest_without_heights(self):
+        self.assertEqual(fr.recommended_charge(self.data, MORTAR, 525), 1)
+        self.assertEqual(fr.recommended_charge(self.data, MORTAR, 400, 0, 100), 0)
+
+    def test_high_target_prefers_charge_2(self):
+        self.assertEqual(fr.recommended_charge(self.data, MORTAR, 525, 0, 340), 2)
+        self.assertEqual(fr.recommended_charge(self.data, MORTAR, 525, 0, 299), 1)
+
+    def test_high_target_when_charge_2_does_not_reach(self):
+        # 200 м: заряд 2 начинается с 300 м — остаётся самый быстрый из подходящих
+        self.assertEqual(fr.recommended_charge(self.data, MORTAR, 200, 0, 400), 0)
+
+    def test_sledgehammer_rule_not_applied(self):
+        self.assertEqual(fr.recommended_charge(self.data, SLEDGE, 15000, 0, 500), 2)
+
+    def test_out_of_range(self):
+        self.assertIsNone(fr.recommended_charge(self.data, MORTAR, 10000))
 
 
 class NamesTest(unittest.TestCase):

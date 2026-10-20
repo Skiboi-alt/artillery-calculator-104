@@ -9,7 +9,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Калькулятор 104">
-  <meta name="description" content="Артиллерийский калькулятор 104-го ДОБ «Волчья стая» для Arma 3 (RS:Q)">
+  <meta name="description" content="Артиллерийский калькулятор 104-го ДОБ, 5-го ОКО и 21-го ОШБ для Arma 3 (RS:Q)">
   <title>Калькулятор 104-го ДОБ</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
@@ -17,18 +17,25 @@
   <link rel="stylesheet" href="styles.css">
   <script src="data.js"></script>
   <script>
-    // Палитра берётся из того же источника, что и у программы для ПК (ui_widgets.py → data.js)
-    for (const [name, value] of Object.entries(window.THEME_COLORS)) {
-      document.documentElement.style.setProperty(`--${name}`, value);
-    }
+    // Палитра темы подразделения — из того же источника, что и у программы для ПК (themes.py → data.js).
+    // Применяется до отрисовки страницы, чтобы не мелькала тема по умолчанию
+    (function () {
+      let key = null;
+      try { key = (JSON.parse(localStorage.getItem("calc104.settings")) || {}).theme; } catch (e) { /* нет данных */ }
+      const unit = window.THEMES.units[key] || window.THEMES.units[window.THEMES.default];
+      for (const [name, value] of Object.entries(unit.colors)) {
+        document.documentElement.style.setProperty(`--${name}`, value);
+      }
+      document.querySelector('meta[name="theme-color"]').setAttribute("content", unit.colors.bg);
+    })();
   </script>
 </head>
 <body>
   <header class="topbar">
-    <div class="logo" id="logo" aria-hidden="true"></div>
+    <button class="logo" id="logo" type="button" aria-label="Тема подразделения"></button>
     <div class="titles">
       <h1>Артиллерийский калькулятор</h1>
-      <p><b>104-Й ДОБ «ВОЛЧЬЯ СТАЯ»</b><span> · ARMA 3 · RS:Q</span></p>
+      <p><b id="unitTitle">104-Й ДОБ «ВОЛЧЬЯ СТАЯ»</b><span> · ARMA 3 · RS:Q</span></p>
     </div>
     <button class="icon-btn" id="helpBtn" type="button" aria-label="Справка">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.6M12 17h.01"/></svg>
@@ -152,8 +159,8 @@
       </div>
       <ul class="history" id="historyList"></ul>
       <div class="watermark" id="historyEmpty">
-        <div id="watermarkWolf" aria-hidden="true"></div>
-        <span>W O L F P A C K</span>
+        <div id="watermarkEmblem" aria-hidden="true"></div>
+        <span id="watermarkText">W O L F P A C K</span>
         <small>Здесь появятся последние расчёты</small>
       </div>
     </section>

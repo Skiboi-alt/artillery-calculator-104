@@ -1,4 +1,4 @@
-/* Мобильная версия в стиле 104-го батальона «Волчья стая».
+/* Мобильная версия: темы 104-го ДОБ, 5-го ОКО и 21-го ОШБ.
    Цвета (--bg, --surface, --accent …) задаются из data.js — тот же источник, что у программы для ПК. */
 
 :root {
@@ -44,11 +44,34 @@ button { cursor: pointer; }
 .topbar .icon-btn { width: 40px; height: 40px; }
 .topbar .icon-btn + .icon-btn { margin-left: -4px; }
 .logo {
-  flex: none; width: 46px; height: 46px; border-radius: 12px;
+  position: relative; flex: none; width: 46px; height: 46px; border-radius: 12px; padding: 0;
   background: var(--surface_2); border: 1px solid var(--border_strong);
   display: grid; place-items: center;
 }
 .logo svg { width: 34px; height: 34px; }
+/* Уголок-подсказка: эмблема нажимается — выбор темы */
+.logo::after {
+  content: ""; position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px;
+  border-right: 2px solid var(--text_faint); border-bottom: 2px solid var(--text_faint); border-radius: 0 0 2px 0;
+}
+
+/* ---------- Выбор темы ---------- */
+.theme-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.theme-list li {
+  display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 14px;
+  border: 1.5px solid var(--t-border); background: var(--t-surface); cursor: pointer;
+  transition: border-color .22s var(--ease);
+}
+.theme-list li.selected { border-color: var(--t-accent); }
+.theme-list .emblem {
+  flex: none; width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center;
+  background: var(--t-plate); border: 1px solid var(--t-border);
+}
+.theme-list .emblem svg { width: 34px; height: 34px; }
+.theme-list b { display: block; color: var(--t-text); font-weight: 600; font-size: 15px; }
+.theme-list .swatches { display: flex; gap: 5px; margin-top: 6px; align-items: center; }
+.theme-list .swatches i { width: 16px; height: 16px; border-radius: 5px; border: 1px solid var(--t-border); }
+.theme-list .swatches small { margin-left: 6px; font-size: 12px; color: var(--t-muted); }
 .titles { flex: 1; min-width: 0; }
 .titles h1 { margin: 0; font-size: clamp(13px, 3.65vw, 18px); letter-spacing: -.01em; font-weight: 600; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .titles p { margin: 2px 0 0; font-size: 11px; color: var(--text_muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -263,7 +286,7 @@ body:has(input:focus) #resValue { font-size: 36px; }
 
 .watermark { display: grid; justify-items: center; gap: 4px; padding: 6px 0 4px; }
 .watermark svg { width: 92px; height: 92px; }
-.watermark span { font-size: 10px; font-weight: 600; color: var(--border_strong); letter-spacing: .1em; }
+.watermark span { font-size: 10px; font-weight: 600; color: var(--border_strong); letter-spacing: .1em; white-space: pre; }
 .watermark small { font-size: 12px; color: var(--text_faint); }
 
 /* ---------- Нижняя панель ---------- */

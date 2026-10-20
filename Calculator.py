@@ -1,11 +1,12 @@
-"""Артиллерийский калькулятор 104-го ДОБ «Волчья стая» (Arma 3, RS:Q)
+"""Артиллерийский калькулятор 104-го ДОБ, 5-го ОКО и 21-го ОШБ (Arma 3, RS:Q)
 
 Модули проекта:
     weapons_data.py — баллистические таблицы (значения не менять)
     ballistics.py   — расчёт возвышения и времени полёта (покрыт тестами в tests/)
     field_rules.py  — правила из методички: подсказки к результату, названия орудий
     storage.py      — сохранения, настройки, журнал ошибок
-    ui_widgets.py   — тема и компоненты интерфейса
+    ui_widgets.py   — компоненты интерфейса
+    themes.py       — темы подразделений: палитры, названия, эмблемы
     version.py      — номер версии и «Что нового»
     updater.py      — проверка новой версии на GitHub
     Calculator.py   — окно программы (этот файл, точка входа)
@@ -28,12 +29,13 @@ except ImportError:  # Не Windows — вместо писка будет си�
 
 import ballistics
 import field_rules
+import themes
 import updater
 from storage import Store, get_resource_path, log, setup_logging
 from version import APP_VERSION, MOBILE_URL, REPOSITORY, WHATS_NEW
 from ui_widgets import (
-    COLORS, HistoryList, InputField, RoundedButton, RoundedPanel, SegmentedControl, Theme,
-    Tween, apply_dark_titlebar, draw_armor_stripes, draw_wolf, enable_dpi_awareness, round_rect,
+    COLORS, UNIT, HistoryList, InputField, RoundedButton, RoundedPanel, SegmentedControl, Theme,
+    Tween, apply_dark_titlebar, apply_theme, draw_armor_stripes, draw_emblem, enable_dpi_awareness, round_rect,
 )
 from weapons_data import WEAPON_DATA
 
@@ -58,8 +60,11 @@ class ArtilleryCalculator:
     def __init__(self, data_dir=None):
         setup_logging(data_dir)
         enable_dpi_awareness()
+        self.store = Store(data_dir)
+        # Тема подразделения применяется до создания окна — все цвета берутся из неё
+        self.theme_key = themes.theme_key(self.store.settings.get("theme"))
+        apply_theme(self.theme_key)
         self.root = tk.Tk()
-        self.root.title("Артиллерийский калькулятор 104-го ДОБ")
         self.root.configure(bg=COLORS["bg"])
         self.root.report_callback_exception = self._on_tk_error
         self.theme = Theme(self.root)
@@ -76,7 +81,6 @@ class ArtilleryCalculator:
         for problem in ballistics.validate_weapon_data(WEAPON_DATA):
             log.warning("Таблицы: %s", problem)
 
-        self.store = Store(data_dir)
         self.saved_values = self.store.saves
         settings = self.store.settings
 
@@ -101,6 +105,7 @@ class ArtilleryCalculator:
         self.timer_warned = False
         self.update_queue = queue.Queue()
         self.update_url = None
+        self.last_view = None     # Что показано в панели результата — чтобы повторить после смены темы
 
         self._setup_geometry(settings.get("geometry"))
         self.setup_ui()
@@ -108,6 +113,8 @@ class ArtilleryCalculator:
             value = settings.get("inputs", {}).get(field_name, "")
             if isinstance(value, str) and value:
                 self.entries[field_name].set(value)
+        # setup_ui сбрасывает ручной выбор заряда (как при смене орудия) — возвращаем сохранённый
+        self.charge_manual = bool(settings.get("charge_manual", False))
         self._update_charge_hint()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -165,6 +172,7 @@ class ArtilleryCalculator:
             "history": self.history[:MAX_HISTORY],
             "adjust_step": self.adjust_step.get(),
             "last_version": APP_VERSION,
+            "theme": self.theme_key,
         })
         self.store.write_settings()
 
@@ -174,8 +182,10 @@ class ArtilleryCalculator:
 
     def setup_ui(self):
         px = self.theme.px
+        self.root.title(f"Артиллерийский калькулятор {UNIT['of']}")
         outer = tk.Frame(self.root, bg=COLORS["bg"])
         outer.pack(fill=tk.BOTH, expand=True, padx=px(24), pady=(px(18), px(24)))
+        self.ui_outer = outer
 
         self._create_header(outer)
 
@@ -220,14 +230,13 @@ class ArtilleryCalculator:
         header = tk.Frame(parent, bg=COLORS["bg"])
         header.pack(fill=tk.X)
 
-        # Логотип: волк «Волчьей стаи» на графитовой плашке, один глаз красный — как у Вульфа
+        # Эмблема подразделения на плашке; клик — выбор темы
         size = px(52)
-        logo = tk.Canvas(header, width=size, height=size, bg=COLORS["bg"], highlightthickness=0, bd=0)
+        logo = tk.Canvas(header, width=size, height=size, bg=COLORS["bg"], highlightthickness=0, bd=0,
+                         cursor="hand2")
         logo.pack(side=tk.LEFT)
-        round_rect(logo, 1, 1, size - 1, size - 1, px(13), fill=COLORS["surface_2"],
-                   outline=COLORS["border_strong"])
-        draw_wolf(logo, px(7), px(6), size - px(14), COLORS["accent"], COLORS["surface_2"],
-                  eye_right=COLORS["error"])
+        self._draw_logo(logo, size, COLORS, UNIT, COLORS["bg"])
+        logo.bind("<Button-1>", lambda e: self.show_theme_picker())
 
         titles = tk.Frame(header, bg=COLORS["bg"])
         titles.pack(side=tk.LEFT, padx=(px(14), 0))
@@ -235,7 +244,7 @@ class ArtilleryCalculator:
                  fg=COLORS["text"], bg=COLORS["bg"]).pack(anchor="w")
         subtitle = tk.Frame(titles, bg=COLORS["bg"])
         subtitle.pack(anchor="w")
-        tk.Label(subtitle, text="104-Й ДОБ  «ВОЛЧЬЯ СТАЯ»", font=self.theme.caption,
+        tk.Label(subtitle, text=UNIT["title"], font=self.theme.caption,
                  fg=COLORS["text"], bg=COLORS["bg"]).pack(side=tk.LEFT)
         tk.Label(subtitle, text=f"   ·   ARMA 3   ·   RS:Q   ·   v{APP_VERSION}   ·   made by SmaleUp", font=self.theme.subtitle,
                  fg=COLORS["text_muted"], bg=COLORS["bg"]).pack(side=tk.LEFT)
@@ -248,12 +257,24 @@ class ArtilleryCalculator:
         self._update_saves_button()
         RoundedButton(header, self.theme, "?", self.show_help, COLORS["bg"],
                       variant="secondary", height=38, width=38).pack(side=tk.RIGHT, padx=(0, px(8)))
+        RoundedButton(header, self.theme, "Тема", self.show_theme_picker, COLORS["bg"],
+                      variant="secondary", height=38, width=72).pack(side=tk.RIGHT, padx=(0, px(8)))
         # Появляется, только если на GitHub есть версия новее
         self.update_button = RoundedButton(header, self.theme, "", self._open_update, COLORS["bg"],
                                            variant="primary", height=38, width=190)
 
+    def _draw_logo(self, canvas, size, colors, unit, parent_bg):
+        """Эмблема подразделения на скруглённой плашке"""
+        canvas.delete("all")
+        canvas.config(bg=parent_bg)
+        round_rect(canvas, 1, 1, size - 1, size - 1, size * 0.25, fill=colors["surface_2"],
+                   outline=colors["border_strong"])
+        margin = size * 0.13
+        draw_emblem(canvas, unit["emblem"], margin, margin * 0.9, size - 2 * margin,
+                    themes.emblem_colors(colors, colors["surface_2"]))
+
     def _card_title(self, parent, text):
-        """Заголовок карточки с маркировкой как на броне 104-го"""
+        """Заголовок карточки с маркировкой как на броне подразделения"""
         px = self.theme.px
         frame = tk.Frame(parent, bg=COLORS["surface"])
         stripes = tk.Canvas(frame, width=px(34), height=px(10), bg=COLORS["surface"],
@@ -485,6 +506,7 @@ class ArtilleryCalculator:
         self._render_advice([])
 
     def _show_empty_result(self):
+        self.last_view = None
         self.value_tween.stop()
         self.shown_elevation = None
         self._set_status_pill("Ожидание", "idle")
@@ -496,6 +518,7 @@ class ArtilleryCalculator:
         self.info_text = ""
 
     def _show_error_result(self, title, details):
+        self.last_view = ("error", title, details)
         self.value_tween.stop()
         self.shown_elevation = None
         self._set_status_pill("Ошибка", "error")
@@ -508,6 +531,7 @@ class ArtilleryCalculator:
         self.info_text = details
 
     def _show_result(self, solution, charge, distance, animate=True, comparison=(), advice=()):
+        self.last_view = ("result", solution, charge, distance, comparison, advice)
         self._stop_timer()
         self.last_solution = solution
         exact = solution.lower_row is solution.upper_row
@@ -1301,6 +1325,121 @@ class ArtilleryCalculator:
             self.root.bell()
 
     # ------------------------------------------------------------------
+    # Темы подразделений
+    # ------------------------------------------------------------------
+
+    def show_theme_picker(self):
+        """Окно выбора темы: карточка на каждое подразделение в его собственных цветах"""
+        px = self.theme.px
+        dialog = self._make_dialog("Тема")
+        body = tk.Frame(dialog, bg=COLORS["surface"])
+        body.pack(padx=px(24), pady=px(22))
+        tk.Label(body, text="Тема подразделения", font=self.theme.title, fg=COLORS["text"],
+                 bg=COLORS["surface"]).pack(anchor="w")
+        tk.Label(body, text="Клик — выбрать   ·   ↑/↓ и Enter", font=self.theme.small,
+                 fg=COLORS["text_muted"], bg=COLORS["surface"]).pack(anchor="w", pady=(0, px(14)))
+
+        cards = {}
+        focus = {"key": self.theme_key}
+
+        def choose(key):
+            dialog.destroy()
+            self.set_theme(key)
+
+        def paint():
+            for key, card in cards.items():
+                colors = themes.get_theme(key)["colors"]
+                card.border = card.base_border = (colors["accent"] if key == focus["key"]
+                                                  else colors["border_strong"])
+                card._redraw()
+
+        def move(delta):
+            index = themes.THEME_ORDER.index(focus["key"]) + delta
+            focus["key"] = themes.THEME_ORDER[max(0, min(len(themes.THEME_ORDER) - 1, index))]
+            paint()
+
+        for key in themes.THEME_ORDER:
+            unit = themes.get_theme(key)
+            colors = unit["colors"]
+            card = RoundedPanel(body, self.theme, colors["surface"], COLORS["surface"],
+                                radius=12, padding=12, border=colors["border_strong"])
+            card.pack(fill=tk.X, pady=(0, px(8)))
+            card.config(cursor="hand2")
+            size = px(48)
+            logo = tk.Canvas(card.inner, width=size, height=size, highlightthickness=0, bd=0)
+            logo.pack(side=tk.LEFT)
+            self._draw_logo(logo, size, colors, unit, colors["surface"])
+            text = tk.Frame(card.inner, bg=colors["surface"])
+            text.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(px(12), 0))
+            tk.Label(text, text=unit["name"], font=self.theme.body_strong, fg=colors["text"],
+                     bg=colors["surface"], anchor="w").pack(fill=tk.X)
+            swatches = tk.Canvas(text, width=px(300), height=px(18), bg=colors["surface"],
+                                 highlightthickness=0, bd=0)
+            swatches.pack(fill=tk.X, pady=(px(4), 0))
+            for i, name in enumerate(("bg", "surface_3", "text_muted", "emblem", "accent")):
+                x = i * px(22)
+                round_rect(swatches, x + 1, 1, x + px(18), px(17), px(5), fill=colors[name],
+                           outline=colors["border_strong"])
+            if key == self.theme_key:
+                swatches.create_text(5 * px(22) + px(6), px(9), text="текущая", anchor="w",
+                                     font=self.theme.small, fill=colors["text_muted"])
+            cards[key] = card
+            for widget in [card, card.inner, logo, text, swatches] + text.winfo_children():
+                widget.bind("<Button-1>", lambda e, k=key: choose(k))
+
+        tk.Frame(body, bg=COLORS["surface"], width=px(400), height=1).pack()
+        RoundedButton(body, self.theme, "Закрыть", dialog.destroy, COLORS["surface"],
+                      variant="secondary", height=40).pack(fill=tk.X, pady=(px(10), 0))
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dialog.bind("<Return>", lambda e: choose(focus["key"]))
+        dialog.bind("<Up>", lambda e: move(-1))
+        dialog.bind("<Down>", lambda e: move(1))
+        paint()
+        self._show_dialog(dialog)
+
+    def set_theme(self, key):
+        """Сменить тему: перестроить интерфейс в новых цветах, сохранив введённое и результат"""
+        key = themes.theme_key(key)
+        if key == self.theme_key:
+            return
+        inputs = {name: field.get() for name, field in self.entries.items()}
+        adjust_step = self.adjust_field.get()
+        charge_manual, charge = self.charge_manual, self.charge_var.get()
+        view = self.last_view
+        self._stop_timer()
+        if self.toast is not None:
+            try:
+                self.toast.destroy()
+            except tk.TclError:
+                pass
+            self.toast = None
+
+        self.theme_key = key
+        apply_theme(key)
+        self.root.configure(bg=COLORS["bg"])
+        self.ui_outer.destroy()
+        self.setup_ui()
+
+        for name, value in inputs.items():
+            self.entries[name].set(value)
+        self.adjust_field.set(adjust_step)
+        self.charge_var.set(charge)
+        self.charge_manual = charge_manual
+        self._update_charge_hint()
+        self._update_adjust_status()
+        if self.update_url:
+            known = self.store.settings.get("update_available") or {}
+            self._show_update(known.get("tag", ""), self.update_url)
+        if view and view[0] == "result":
+            _, solution, charge, distance, comparison, advice = view
+            self._show_result(solution, charge, distance, animate=False, comparison=comparison, advice=advice)
+        elif view and view[0] == "error":
+            self._show_error_result(view[1], view[2])
+        apply_dark_titlebar(self.root, COLORS["bg"])
+        self._save_settings()
+        self.show_notification(f"Тема: {UNIT['name']}", notification_type="success")
+
+    # ------------------------------------------------------------------
     # Справка, «Что нового», обновления
     # ------------------------------------------------------------------
 
@@ -1325,6 +1464,9 @@ class ArtilleryCalculator:
         ("Таймер полёта",
          "Клик по плитке «Время полёта» или F2 — обратный отсчёт до разрыва. Короткий сигнал за "
          "5 секунд, длинный — в момент разрыва. Повторное нажатие останавливает таймер."),
+        ("Тема подразделения",
+         "Кнопка «Тема» в шапке или клик по эмблеме: 104-й ДОБ «Волчья стая», 5-й ОКО | Shadow или "
+         "21-й Орбитально-штурмовой батальон. Меняются цвета и эмблема, расчёт тот же."),
         ("Клавиши",
          "Enter — расчёт · F2 — таймер · F1 — справка · Ctrl+S — сохранить · Ctrl+O — сохранения · "
          "Tab — по элементам · ←/→ — переключатели · пробел — кнопки."),
@@ -1337,7 +1479,8 @@ class ArtilleryCalculator:
         body.pack(padx=px(26), pady=px(22))
         tk.Label(body, text="Справка", font=self.theme.title, fg=COLORS["text"],
                  bg=COLORS["surface"]).pack(anchor="w")
-        tk.Label(body, text=f"Артиллерийский калькулятор 104-го ДОБ · версия {APP_VERSION} · сделано SmaleUp", font=self.theme.small,
+        tk.Label(body, text=f"Артиллерийский калькулятор {UNIT['of']} · версия {APP_VERSION} · сделано SmaleUp",
+                 font=self.theme.small,
                  fg=COLORS["text_muted"], bg=COLORS["surface"]).pack(anchor="w", pady=(0, px(10)))
         # Две колонки — чтобы окно помещалось по высоте даже на ноутбуке
         grid = tk.Frame(body, bg=COLORS["surface"])

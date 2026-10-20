@@ -6,6 +6,8 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 
+import themes
+
 
 # ----------------------------------------------------------------------
 # Windows: чёткий текст и тёмный заголовок окна
@@ -46,33 +48,20 @@ def apply_dark_titlebar(window, caption_color=None):
 # Палитра и рисование
 # ----------------------------------------------------------------------
 
-# Цветовая палитра в стиле 104-го батальона «Волчья стая» (Star Wars: The Clone Wars):
-# нейтральные графитовые и серые тона полос на броне, белая броня клонов как акцент
-# и красный кибернетический глаз командира Вульфа — только для ошибок
-COLORS = {
-    "bg": "#0e0e0f",              # Фон окна — чёрный визор
-    "surface": "#171718",         # Карточки
-    "surface_2": "#1f1f21",       # Поля ввода, переключатели
-    "surface_3": "#2c2c2e",       # Выбранный сегмент, hover
-    "surface_4": "#38383b",       # Нажатие
-    "border": "#29292b",
-    "border_strong": "#3d3d40",
-    "text": "#f2f2f0",            # Белая броня клонов
-    "text_muted": "#9a9a9c",      # Серые полосы
-    "text_faint": "#5e5e61",
-    "text_ghost": "#3f3f42",      # Недоступные варианты
-    "watermark": "#1e1e20",
-    "accent": "#e6e6e3",          # Белая броня — главный акцент
-    "accent_hover": "#ffffff",
-    "accent_press": "#c8c8c5",
-    "accent_text": "#111112",     # Тёмный текст на белом
-    "accent_soft": "#3a3a3d",     # Выделение текста
-    "success": "#d4d4d1",
-    "success_soft": "#2e2e30",
-    "error": "#e5383b",           # Красный глаз Вульфа
-    "error_soft": "#3a161a",
-    "transparent": "#010203",     # Ключевой цвет прозрачности для уведомлений
-}
+# Текущая палитра. Значения берутся из темы подразделения (themes.py); при смене темы словарь
+# обновляется на месте, а интерфейс перестраивается — поэтому все компоненты читают COLORS при отрисовке
+COLORS = dict(themes.get_theme(themes.DEFAULT_THEME)["colors"])
+# Текущая тема целиком: названия, эмблема, водяной знак
+UNIT = dict(themes.get_theme(themes.DEFAULT_THEME))
+
+
+def apply_theme(key):
+    """Переключить COLORS и UNIT на тему подразделения"""
+    theme = themes.get_theme(key)
+    COLORS.clear()
+    COLORS.update(theme["colors"])
+    UNIT.clear()
+    UNIT.update(theme)
 
 
 def blend_color(color_from, color_to, t):
@@ -139,41 +128,11 @@ def round_rect(canvas, x1, y1, x2, y2, r, **kwargs):
     return canvas.create_polygon(points, smooth=True, **kwargs)
 
 
-# Эмблема 104-го батальона «Волчья стая»: угловатая голова волка анфас.
-# Координаты левой половины в сетке 100×100, правая получается зеркально.
-WOLF_HALF_OUTLINE = [
-    (50, 30), (39, 25), (21, 4), (17, 33), (6, 42), (15, 50),
-    (4, 61), (23, 66), (35, 81), (50, 96),
-]
-WOLF_EAR_INNER = [(23, 12), (35, 27), (25, 33)]
-WOLF_EYE = [(27, 44), (44, 51), (32, 54)]
-WOLF_MUZZLE = [(46, 57), (54, 57), (52, 72), (48, 72)]
-WOLF_NOSE = [(43, 77), (57, 77), (50, 86)]
-
-
-def wolf_shapes():
-    """Полигоны эмблемы в сетке 100×100: (контур, [вырезы], левый глаз, правый глаз)"""
-    def mirror(points):
-        return [(100 - x, y) for x, y in points]
-
-    outline = WOLF_HALF_OUTLINE + mirror(WOLF_HALF_OUTLINE[::-1])
-    cutouts = []
-    for shape in (WOLF_EAR_INNER, WOLF_MUZZLE, WOLF_NOSE):
-        cutouts += [shape, mirror(shape)]
-    return outline, cutouts, WOLF_EYE, mirror(WOLF_EYE)
-
-
-def draw_wolf(canvas, x, y, size, fill, cutout, eye_left=None, eye_right=None):
-    """Нарисовать голову волка в квадрате (x, y, size)"""
-    def place(points):
-        return [coord for px_, py_ in points for coord in (x + px_ * size / 100, y + py_ * size / 100)]
-
-    outline, cutouts, left_eye, right_eye = wolf_shapes()
-    canvas.create_polygon(place(outline), fill=fill, outline=fill)
-    for shape in cutouts:
-        canvas.create_polygon(place(shape), fill=cutout, outline=cutout)
-    canvas.create_polygon(place(left_eye), fill=eye_left or cutout, outline=eye_left or cutout)
-    canvas.create_polygon(place(right_eye), fill=eye_right or cutout, outline=eye_right or cutout)
+def draw_emblem(canvas, layers, x, y, size, colors):
+    """Нарисовать эмблему темы в квадрате (x, y, size); colors — цвет для каждой роли слоя"""
+    for role, points in layers:
+        flat = [coord for px_, py_ in points for coord in (x + px_ * size / 100, y + py_ * size / 100)]
+        canvas.create_polygon(flat, fill=colors[role], outline=colors[role])
 
 
 def draw_armor_stripes(canvas, x, y, height, colors, width=None, gap=None):
@@ -628,7 +587,7 @@ class InputField(tk.Frame):
 
 
 class HistoryList(tk.Canvas):
-    """Последние расчёты: клик по строке — вернуть её параметры. Пустой список — водяной знак стаи."""
+    """Последние расчёты: клик по строке — вернуть её параметры. Пустой список — водяной знак подразделения."""
 
     def __init__(self, parent, theme, parent_bg, on_select, on_clear):
         super().__init__(parent, bg=parent_bg, highlightthickness=0, bd=0, width=1, height=1)
@@ -726,6 +685,6 @@ class HistoryList(tk.Canvas):
             return
         x = (w - size) / 2
         y = (h - size - px(20)) / 2
-        draw_wolf(self, x, y, size, COLORS["watermark"], self.parent_bg)
-        self.create_text(w / 2, y + size + px(14), text="W O L F P A C K",
+        draw_emblem(self, UNIT["emblem"], x, y, size, themes.watermark_colors(COLORS, self.parent_bg))
+        self.create_text(w / 2, y + size + px(14), text=UNIT["watermark"],
                          font=self.theme.caption, fill=COLORS["border"])

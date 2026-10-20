@@ -1,4 +1,4 @@
-// Мобильная версия артиллерийского калькулятора 104-го ДОБ «Волчья стая».
+// Мобильная версия артиллерийского калькулятора 104-го ДОБ, 5-го ОКО и 21-го ОШБ.
 // Логика и тексты повторяют программу для ПК (Calculator.py); расчёт — в ballistics.js.
 (function () {
   "use strict";
@@ -6,7 +6,7 @@
   const B = window.Ballistics;
   const F = window.FieldRules;
   const DATA = window.WEAPON_DATA;
-  const COLORS = window.THEME_COLORS;
+  const THEMES = window.THEMES;
   const MAX_SAVES = 10;
   const MAX_HISTORY = 20;
   const KEYS = { saves: "calc104.saves", settings: "calc104.settings", installHidden: "calc104.installHidden" };
@@ -55,6 +55,7 @@
     lastSolution: null,
     adjust: null,          // { base, along, lateral } — корректировка относительно линии орудие–цель
     adjustStep: String(settings.adjust_step ?? "50"),
+    theme: THEMES.units[settings.theme] ? settings.theme : THEMES.default,
   };
 
   function persistSettings() {
@@ -66,21 +67,70 @@
       history: state.history.slice(0, MAX_HISTORY),
       adjust_step: state.adjustStep,
       last_version: window.APP_INFO.version,
+      theme: state.theme,
     });
   }
 
-  // ---------------------------------------------------------------- эмблема
+  // ---------------------------------------------------------------- тема и эмблема
 
-  function wolfSvg(fill, cutout, eyeRight) {
-    const W = window.WOLF_SHAPES;
+  // Слои эмблемы: [роль, точки в сетке 100×100]; цвет роли — как в themes.py (emblem_colors)
+  function emblemSvg(unit, colors) {
     const pts = (shape) => shape.map(([x, y]) => `${x},${y}`).join(" ");
-    const poly = (shape, color) => `<polygon points="${pts(shape)}" fill="${color}"/>`;
-    return `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">${poly(W.outline, fill)}${
-      W.cutouts.map((s) => poly(s, cutout)).join("")}${poly(W.leftEye, cutout)}${poly(W.rightEye, eyeRight || cutout)}</svg>`;
+    return `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">${unit.emblem.map(([role, shape]) =>
+      `<polygon points="${pts(shape)}" fill="${colors[role]}" stroke="${colors[role]}" stroke-width=".4"/>`).join("")}</svg>`;
   }
 
-  $("logo").innerHTML = wolfSvg(COLORS.accent, COLORS.surface_2, COLORS.error);
-  $("watermarkWolf").innerHTML = wolfSvg(COLORS.watermark, COLORS.surface);
+  const emblemColors = (c, plate) => ({ fill: c.emblem, cut: plate, mark: c.mark, eye: c.error, dark: c.bg, fold: c.text_muted });
+  const watermarkColors = (c, plate) => ({ fill: c.watermark, cut: plate, mark: c.watermark, eye: plate, dark: plate, fold: plate });
+
+  function applyTheme(key) {
+    const unit = THEMES.units[key] || THEMES.units[THEMES.default];
+    const c = unit.colors;
+    for (const [name, value] of Object.entries(c)) document.documentElement.style.setProperty(`--${name}`, value);
+    document.querySelector('meta[name="theme-color"]').setAttribute("content", c.bg);
+    document.title = `Калькулятор ${unit.of}`;
+    $("logo").innerHTML = emblemSvg(unit, emblemColors(c, c.surface_2));
+    $("watermarkEmblem").innerHTML = emblemSvg(unit, watermarkColors(c, c.surface));
+    $("watermarkText").textContent = unit.watermark;
+    $("unitTitle").textContent = unit.title.replace(/\s+/g, " ");
+  }
+
+  function openThemes() {
+    const items = THEMES.order.map((key) => {
+      const unit = THEMES.units[key];
+      const c = unit.colors;
+      const vars = `--t-surface:${c.surface};--t-plate:${c.surface_2};--t-border:${c.border_strong};` +
+        `--t-accent:${c.accent};--t-text:${c.text};--t-muted:${c.text_muted}`;
+      const swatches = ["bg", "surface_3", "text_muted", "emblem", "accent"]
+        .map((name) => `<i style="background:${c[name]}"></i>`).join("");
+      return `<li data-key="${key}" style="${vars}" class="${key === state.theme ? "selected" : ""}">
+        <span class="emblem">${emblemSvg(unit, emblemColors(c, c.surface_2))}</span>
+        <span><b>${escapeHtml(unit.name)}</b><span class="swatches">${swatches}${
+          key === state.theme ? "<small>текущая</small>" : ""}</span></span></li>`;
+    }).join("");
+    openSheet(`
+      <h2>Тема подразделения</h2>
+      <p>Меняются цвета и эмблема, расчёт тот же.</p>
+      <ul class="theme-list">${items}</ul>
+      <div class="buttons" style="grid-template-columns:1fr">
+        <button class="btn secondary" data-act="close" type="button">Закрыть</button>
+      </div>`);
+    sheet.querySelector('[data-act="close"]').onclick = closeSheet;
+    sheet.querySelectorAll(".theme-list li").forEach((li) => {
+      li.addEventListener("click", () => {
+        const key = li.dataset.key;
+        closeSheet();
+        if (key === state.theme) return;
+        state.theme = key;
+        applyTheme(key);
+        persistSettings();
+        toast(`Тема: ${THEMES.units[key].name}`, "success");
+      });
+    });
+  }
+
+  applyTheme(state.theme);
+  $("logo").addEventListener("click", () => openThemes());
 
   // ---------------------------------------------------------------- переключатели
 
@@ -893,6 +943,7 @@
     ["Корректировка огня", "После выстрела по докладу наблюдателя: «Недолёт» — дальше на шаг, «Перелёт» — ближе, «Левее»/«Правее» — сместить разрыв вбок. Сдвиги — относительно линии орудие–цель; дистанция пересчитывается, поправку направления (в милах, 6400 в круге) внесите в азимут. «Сброс» возвращает исходную дистанцию."],
     ["Таймер полёта", "Нажмите на «Время полёта» — обратный отсчёт до разрыва. Короткий сигнал за 5 секунд, длинный — в момент разрыва (и вибрация на Android). Повторное нажатие — стоп."],
     ["Сохранения", "Значок папки — список сохранений, импорт и экспорт saves.json: формат общий с программой для ПК."],
+    ["Тема подразделения", "Нажмите на эмблему слева вверху: 104-й ДОБ «Волчья стая», 5-й ОКО | Shadow или 21-й Орбитально-штурмовой батальон. Меняются цвета и эмблема, расчёт тот же."],
   ];
 
   function showHelp() {
@@ -900,15 +951,19 @@
       `<div class="help-section"><span class="caption">${escapeHtml(title)}</span><p>${escapeHtml(text)}</p></div>`).join("");
     openSheet(`
       <h2>Справка</h2>
-      <p>Артиллерийский калькулятор 104-го ДОБ · версия ${escapeHtml(window.APP_INFO.version)} · сделано SmaleUp</p>
+      <p>Артиллерийский калькулятор ${escapeHtml(THEMES.units[state.theme].of)} · версия ${escapeHtml(window.APP_INFO.version)} · сделано SmaleUp</p>
       ${sections}
       <div class="links"><a href="https://github.com/${escapeHtml(window.APP_INFO.repository)}" target="_blank" rel="noopener">Проект на GitHub</a></div>
       <div class="buttons">
         <button class="btn secondary" data-act="news" type="button">Что нового</button>
+        <button class="btn secondary" data-act="themes" type="button">Тема</button>
+      </div>
+      <div class="buttons" style="grid-template-columns:1fr;margin-top:8px">
         <button class="btn primary" data-act="close" type="button">Закрыть</button>
       </div>`);
     sheet.querySelector('[data-act="close"]').onclick = closeSheet;
     sheet.querySelector('[data-act="news"]').onclick = () => { closeSheet(); setTimeout(showWhatsNew, 300); };
+    sheet.querySelector('[data-act="themes"]').onclick = () => { closeSheet(); setTimeout(openThemes, 300); };
   }
 
   function showWhatsNew() {
@@ -989,6 +1044,10 @@
   if (problems.length) console.warn("Таблицы:", problems);
 
   onWeaponChange();
+  // onWeaponChange сбрасывает ручной выбор заряда (как при смене орудия) — возвращаем сохранённый
+  state.chargeManual = Boolean(settings.charge_manual);
+  updateChargeHint();
+  persistSettings();
   updateSavesBadge();
   renderHistory();
   showEmpty();
@@ -998,5 +1057,5 @@
   persistSettings();
 
   // Для отладки и автоматических проверок
-  window.App = { state, calculate, applyValues, saves };
+  window.App = { state, calculate, applyValues, saves, applyTheme };
 })();

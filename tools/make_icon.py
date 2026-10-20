@@ -1,4 +1,4 @@
-"""Сгенерировать icon.ico с эмблемой «Волчьей стаи» (та же, что в шапке программы).
+"""Сгенерировать icon.ico с эмблемой «Волчьей стаи» (тема по умолчанию, как в шапке программы).
 
 Нужен Pillow (только для этого скрипта, программе он не нужен):
     pip install pillow
@@ -13,10 +13,20 @@ from PIL import Image, ImageDraw
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from ui_widgets import COLORS, wolf_shapes  # noqa: E402
+import themes  # noqa: E402
+
+UNIT = themes.get_theme(themes.DEFAULT_THEME)
+COLORS = UNIT["colors"]
 
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 SUPERSAMPLE = 4  # Рисуем крупно и уменьшаем — сглаженные края
+
+
+def draw_emblem(draw, place, plate):
+    """Слои эмблемы темы; place переводит точки сетки 100×100 в пиксели"""
+    colors = themes.emblem_colors(COLORS, plate)
+    for role, points in UNIT["emblem"]:
+        draw.polygon(place(points), fill=colors[role])
 
 
 def render(size):
@@ -33,12 +43,7 @@ def render(size):
     def place(points):
         return [(margin + x * scale, margin + y * scale) for x, y in points]
 
-    outline, cutouts, left_eye, right_eye = wolf_shapes()
-    draw.polygon(place(outline), fill=COLORS["accent"])
-    for shape in cutouts:
-        draw.polygon(place(shape), fill=COLORS["surface_2"])
-    draw.polygon(place(left_eye), fill=COLORS["surface_2"])
-    draw.polygon(place(right_eye), fill=COLORS["error"])  # Красный глаз Вульфа
+    draw_emblem(draw, place, COLORS["surface_2"])
     return image.resize((size, size), Image.LANCZOS)
 
 
@@ -57,12 +62,7 @@ def render_full_bleed(size, wolf_scale):
     def place(points):
         return [(offset + x * scale, offset + y * scale) for x, y in points]
 
-    outline, cutouts, left_eye, right_eye = wolf_shapes()
-    draw.polygon(place(outline), fill=COLORS["accent"])
-    for shape in cutouts:
-        draw.polygon(place(shape), fill=COLORS["surface_2"])
-    draw.polygon(place(left_eye), fill=COLORS["surface_2"])
-    draw.polygon(place(right_eye), fill=COLORS["error"])
+    draw_emblem(draw, place, COLORS["surface_2"])
     return image.resize((size, size), Image.LANCZOS)
 
 
